@@ -9,7 +9,7 @@
    fall out of that.                                                       */
 import * as THREE from 'three';
 import { scene } from './core.js';
-import { solid, rampVolume, trigger, clearPhysics, rampWorld, SOLIDS, RAMPS, TRIGGERS } from './physics.js';
+import { solid, rampVolume, brush, brushVertices, trigger, clearPhysics, rampWorld, SOLIDS, RAMPS, BRUSHES, TRIGGERS } from './physics.js';
 import { slopeOf } from './config.js';
 
 /* Everything a map builds lives under mapGroup so a rebuild can wipe it clean. */
@@ -211,6 +211,59 @@ export function surfRamp(o) {
   };
 }
 
+/* ---------------- convex brushes ----------------
+   A brush arrives as a set of planes with no faces attached, so the mesh has
+   to be recovered: take the corners lying on each plane, order them around
+   that face, and fan them. This is the same reconstruction a map decompiler
+   does, and it is what lets arbitrary geometry — anything not expressible as a
+   box or a wedge — be both collided with and seen. */
+
+/** Build the visible mesh for a convex brush and add it to the world. */
+export function brushSolid(planes, o = {}) {
+  const b = brush(planes, o.tag);
+  if (!b) return null;
+
+  const tri = [];
+  for (const p of b.planes) {
+    const face = b.verts.filter(v => Math.abs(p.x * v.x + p.y * v.y + p.z * v.z - p.d) < 0.08);
+    if (face.length < 3) continue;
+
+    // an orthonormal basis in the plane, to sort the corners around it
+    const up = Math.abs(p.y) < 0.9 ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 };
+    let ax = { x: up.y * p.z - up.z * p.y, y: up.z * p.x - up.x * p.z, z: up.x * p.y - up.y * p.x };
+    const al = Math.hypot(ax.x, ax.y, ax.z) || 1;
+    ax = { x: ax.x / al, y: ax.y / al, z: ax.z / al };
+    const ay = { x: p.y * ax.z - p.z * ax.y, y: p.z * ax.x - p.x * ax.z, z: p.x * ax.y - p.y * ax.x };
+
+    const c = face.reduce((a, v) => ({ x: a.x + v.x / face.length, y: a.y + v.y / face.length, z: a.z + v.z / face.length }), { x: 0, y: 0, z: 0 });
+    const ordered = face.slice().sort((u, v) => {
+      const au = Math.atan2((u.x - c.x) * ay.x + (u.y - c.y) * ay.y + (u.z - c.z) * ay.z,
+                            (u.x - c.x) * ax.x + (u.y - c.y) * ax.y + (u.z - c.z) * ax.z);
+      const av = Math.atan2((v.x - c.x) * ay.x + (v.y - c.y) * ay.y + (v.z - c.z) * ay.z,
+                            (v.x - c.x) * ax.x + (v.y - c.y) * ax.y + (v.z - c.z) * ax.z);
+      return au - av;
+    });
+    // wind so the face points along its own outward normal
+    for (let i = 1; i < ordered.length - 1; i++) {
+      tri.push(ordered[0], ordered[i + 1], ordered[i]);
+    }
+  }
+  if (!tri.length) return b;
+
+  const pos = new Float32Array(tri.length * 3);
+  tri.forEach((v, i) => { pos[i * 3] = v.x; pos[i * 3 + 1] = v.y; pos[i * 3 + 2] = v.z; });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+
+  const color = o.color == null ? NEON.teal : o.color;
+  const m = new THREE.Mesh(g, o.mat || rampMaterial(color));
+  m.castShadow = o.shadow !== false; m.receiveShadow = true;
+  mapGroup.add(m);
+  if (o.edge !== null) edgeLines(g, o.edge === undefined ? color : o.edge, o.edgeAlpha == null ? 0.4 : o.edgeAlpha);
+  return b;
+}
+
 /** A polyline in world space (ramp edges, route hints). */
 export function lineStrip(points, color, opacity = 0.8) {
   const pos = new Float32Array(points.length * 3);
@@ -338,4 +391,7 @@ export function clearWorld() {
   clearPhysics();
 }
 
-export const worldStats = () => ({ solids: SOLIDS.length, ramps: RAMPS.length, triggers: TRIGGERS.length, meshes: mapGroup.children.length });
+export const worldStats = () => ({
+  solids: SOLIDS.length, ramps: RAMPS.length, brushes: BRUSHES.length,
+  triggers: TRIGGERS.length, meshes: mapGroup.children.length,
+});

@@ -29,11 +29,14 @@ import { MOVE, RULES } from './config.js';
 
 export const SOLIDS = [];
 export const RAMPS = [];
+export const BRUSHES = [];
 export const TRIGGERS = [];
 
 const UP = Object.freeze({ x: 0, y: 1, z: 0 });
 
-export function clearPhysics() { SOLIDS.length = 0; RAMPS.length = 0; TRIGGERS.length = 0; }
+export function clearPhysics() {
+  SOLIDS.length = 0; RAMPS.length = 0; BRUSHES.length = 0; TRIGGERS.length = 0;
+}
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
@@ -84,6 +87,110 @@ export function rampVolume(o) {
     tag: o.tag || "",
   };
   RAMPS.push(r); return r;
+}
+
+/* ============================== convex brushes ==============================
+   `solid()` and `rampVolume()` are convenient shapes for hand-authored maps,
+   but they are shapes — an axis-aligned box, and a wedge with one sloped top
+   face at a yaw. A real Source map is not made of those. It is made of convex
+   brushes: arbitrary sets of planes, at arbitrary angles, with no axis or
+   symmetry to lean on. A ramp in a real surf map is routinely both yawed *and*
+   pitched, which the wedge cannot express at all.
+
+   So this is the general case, and it is the representation any real map has
+   to be loaded into. The collision is the classic one: expand each of the
+   brush's planes outward by the hull's extent along that plane's normal, and
+   the swept box becomes a single point tested against a slightly fatter convex
+   volume. Push out along the least-penetrating plane.                        */
+
+/** Plane through `p` with unit normal `n`, stored as n·x = d, n pointing OUT. */
+export function plane(nx, ny, nz, d) {
+  const L = Math.hypot(nx, ny, nz) || 1;
+  return { x: nx / L, y: ny / L, z: nz / L, d: d / L };
+}
+
+/**
+ * Every corner of a convex brush: intersect each triple of planes and keep the
+ * points that lie inside all of them. Slow in principle and irrelevant in
+ * practice — a brush has a handful of planes and this runs once, at load.
+ */
+export function brushVertices(planes, eps = 0.06) {
+  const out = [];
+  for (let i = 0; i < planes.length; i++) {
+    for (let j = i + 1; j < planes.length; j++) {
+      for (let k = j + 1; k < planes.length; k++) {
+        const v = triplePoint(planes[i], planes[j], planes[k]);
+        if (!v) continue;
+        let inside = true;
+        for (const p of planes) {
+          if (p.x * v.x + p.y * v.y + p.z * v.z - p.d > eps) { inside = false; break; }
+        }
+        if (!inside) continue;
+        if (!out.some(o => Math.abs(o.x - v.x) < 0.05 && Math.abs(o.y - v.y) < 0.05 && Math.abs(o.z - v.z) < 0.05)) {
+          out.push(v);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function triplePoint(a, b, c) {
+  const det =
+    a.x * (b.y * c.z - b.z * c.y) -
+    a.y * (b.x * c.z - b.z * c.x) +
+    a.z * (b.x * c.y - b.y * c.x);
+  if (Math.abs(det) < 1e-9) return null;              // parallel or coincident
+  const inv = 1 / det;
+  return {
+    x: inv * (a.d * (b.y * c.z - b.z * c.y) - a.y * (b.d * c.z - b.z * c.d) + a.z * (b.d * c.y - b.y * c.d)),
+    y: inv * (a.x * (b.d * c.z - b.z * c.d) - a.d * (b.x * c.z - b.z * c.x) + a.z * (b.x * c.d - b.d * c.x)),
+    z: inv * (a.x * (b.y * c.d - b.d * c.y) - a.y * (b.x * c.d - b.d * c.x) + a.d * (b.x * c.y - b.y * c.x)),
+  };
+}
+
+/**
+ * A solid convex brush. `planes` are outward-facing; a point is inside when
+ * n·p <= d for every one of them.
+ */
+export function brush(planes, tag) {
+  const ps = planes.map(p => (p.d === undefined ? plane(p[0], p[1], p[2], p[3]) : p));
+  const verts = brushVertices(ps);
+  const b = {
+    planes: ps, verts, tag: tag || "",
+    minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity,
+    /* the flattest upward face, which is what decides whether it is a floor */
+    walkable: ps.some(p => p.y >= MOVE.walkableNormalY),
+  };
+  for (const v of verts) {
+    b.minX = Math.min(b.minX, v.x); b.maxX = Math.max(b.maxX, v.x);
+    b.minY = Math.min(b.minY, v.y); b.maxY = Math.max(b.maxY, v.y);
+    b.minZ = Math.min(b.minZ, v.z); b.maxZ = Math.max(b.maxZ, v.z);
+  }
+  if (!verts.length) return null;                     // degenerate / unbounded: ignore it
+  BRUSHES.push(b);
+  return b;
+}
+
+/** How far a plane must move along its own normal to clear the hull. */
+function hullOffset(p, radius, height) {
+  return radius * Math.abs(p.x) + (height / 2) * Math.abs(p.y) + radius * Math.abs(p.z);
+}
+
+/**
+ * Penetration of the hull into a brush, or null if they are apart.
+ * Returns the least-penetrating plane, which is the one to push out along.
+ */
+export function brushContact(b, x, feetY, z, radius, height) {
+  const cy = feetY + height / 2;
+  let best = Infinity, bn = null;
+  for (const p of b.planes) {
+    const dist = p.x * x + p.y * cy + p.z * z - (p.d + hullOffset(p, radius, height));
+    if (dist > 0) return null;                        // this plane separates them
+    const depth = -dist;
+    if (depth < best) { best = depth; bn = p; }
+  }
+  return bn ? { depth: best, n: bn } : null;
 }
 
 /** Non-solid volume. `data` carries the gameplay meaning (see timer.js). */
@@ -164,6 +271,29 @@ export function findGround(x, z, lo, hi, radius) {
     if (y < lo || y > hi) continue;
     if (y > bestY) { bestY = y; bestN = r.n; bestRamp = r; }
   }
+  for (const b of BRUSHES) {
+    if (!b.walkable) continue;
+    if (b.maxY < lo - 1 || b.minY > hi + MOVE.standHeight) continue;
+    if (x + radius <= b.minX || x - radius >= b.maxX) continue;
+    if (z + radius <= b.minZ || z - radius >= b.maxZ) continue;
+    for (const p of b.planes) {
+      if (p.y < MOVE.walkableNormalY) continue;
+      // the feet height at which the hull rests exactly on this face
+      const off = radius * Math.abs(p.x) + radius * Math.abs(p.z);
+      const halfH = MOVE.standHeight / 2;               // offset in y is handled by the -halfH below
+      const y = (p.d + off + halfH * Math.abs(p.y) - p.x * x - p.z * z) / p.y - halfH;
+      if (y < lo || y > hi || y <= bestY) continue;
+      // ...but only if that point is genuinely on this brush, not past its edge
+      const cy = y + halfH;
+      let on = true;
+      for (const q of b.planes) {
+        if (q === p) continue;
+        const off2 = radius * Math.abs(q.x) + halfH * Math.abs(q.y) + radius * Math.abs(q.z);
+        if (q.x * x + q.y * cy + q.z * z - (q.d + off2) > 0.05) { on = false; break; }
+      }
+      if (on) { bestY = y; bestN = p; bestRamp = null; }
+    }
+  }
   return bestY > -Infinity ? { y: bestY, n: bestN, ramp: bestRamp } : null;
 }
 
@@ -177,26 +307,62 @@ export function hullFits(x, y, z, height, radius) {
     if (!rampFootprint(r, x, z, radius)) continue;
     if (y + height > r.base + 0.01 && y < rampSurfaceY(r, x, z) - 0.01) return false;
   }
+  for (const b of BRUSHES) {
+    if (brushContact(b, x, y, z, radius, height)) return false;
+  }
   return true;
 }
 
 /**
- * The steep ramp the hull is riding (or about to touch), or null.
- * Contact alone is too twitchy to drive a HUD light: a tick where gravity
- * happened not to push the hull through the plane still *is* a ride, so this
- * looks for the nearest steep face within `reach` underneath instead.
+ * The steep face the hull is riding (or about to touch).
+ *
+ * Contact alone is too twitchy to drive anything: a tick where gravity did not
+ * happen to push the hull all the way through the plane still *is* a ride, and
+ * treating it as airborne makes a controller — human or bot — throw away that
+ * tick. So this looks for the nearest steep face within `reach` underneath
+ * instead, over both wedges and brushes.
+ *
+ * Returns { ramp, n } where `ramp` is the wedge if it was one, else null.
  */
-export function findSurfRamp(x, y, z, radius, reach = 4) {
-  let best = null, bestD = Infinity;
+export function findSurfContact(x, y, z, radius, height = MOVE.standHeight, reach = 4) {
+  let bestD = Infinity, found = null;
+
   for (const r of RAMPS) {
     if (r.walkable) continue;
-    if (y >= r.maxY + reach || y + MOVE.standHeight <= r.base) continue;
+    if (y >= r.maxY + reach || y + height <= r.base) continue;
     if (!rampFootprint(r, x, z, radius)) continue;
     const d = rampDist(r, x, y, z, radius);
     if (d < -MOVE.maxRampPush || d > reach) continue;
-    if (Math.abs(d) < bestD) { bestD = Math.abs(d); best = r; }
+    if (Math.abs(d) < bestD) { bestD = Math.abs(d); found = { ramp: r, n: r.n }; }
   }
-  return best;
+
+  const cy = y + height / 2;
+  for (const b of BRUSHES) {
+    if (y >= b.maxY + reach || y + height <= b.minY) continue;
+    if (x + radius <= b.minX || x - radius >= b.maxX) continue;
+    if (z + radius <= b.minZ || z - radius >= b.maxZ) continue;
+    for (const p of b.planes) {
+      if (p.y <= 0.01 || p.y >= MOVE.walkableNormalY) continue;    // not a face you ride
+      const d = p.x * x + p.y * cy + p.z * z - (p.d + hullOffset(p, radius, height));
+      if (d < -MOVE.maxRampPush || d > reach) continue;
+      // and the hull has to actually be over this face, not past its edge
+      let on = true;
+      for (const q of b.planes) {
+        if (q === p) continue;
+        if (p.x * q.x + p.y * q.y + p.z * q.z > 0.999) continue;
+        const dq = q.x * x + q.y * cy + q.z * z - (q.d + hullOffset(q, radius, height));
+        if (dq > reach + 0.5) { on = false; break; }
+      }
+      if (on && Math.abs(d) < bestD) { bestD = Math.abs(d); found = { ramp: null, n: p }; }
+    }
+  }
+  return found;
+}
+
+/** Back-compatible: just the wedge, for the HUD's ramp gauge. */
+export function findSurfRamp(x, y, z, radius, reach = 4) {
+  const c = findSurfContact(x, y, z, radius, MOVE.standHeight, reach);
+  return c && c.ramp ? c.ramp : null;
 }
 
 export function triggersAt(pos, radius, height, out) {
@@ -285,6 +451,20 @@ function resolve(pos, vel, height, canStep, radius, out) {
       if (out && !r.walkable) { out.ramp = r; }
     }
 
+    for (const b of BRUSHES) {
+      if (pos.y >= b.maxY - 0.005 || pos.y + height <= b.minY + 0.005) continue;
+      if (pos.x + radius <= b.minX || pos.x - radius >= b.maxX) continue;
+      if (pos.z + radius <= b.minZ || pos.z - radius >= b.maxZ) continue;
+      const c = brushContact(b, pos.x, pos.y, pos.z, radius, height);
+      if (!c) continue;
+      // a grounded player steps over a low lip rather than being stopped by it
+      if (canStep && c.n.y >= MOVE.walkableNormalY && c.depth <= MOVE.stepHeight + 0.01) continue;
+      pos.x += c.n.x * c.depth; pos.y += c.n.y * c.depth; pos.z += c.n.z * c.depth;
+      clipVelocity(vel, c.n);
+      moved = true; hits++;
+      if (out && c.n.y > 0.01 && c.n.y < MOVE.walkableNormalY) out.normal = c.n;
+    }
+
     for (const s of SOLIDS) {
       if (pos.y + height <= s.minY + 0.005 || pos.y >= s.maxY - 0.005) continue;
       if (!(pos.x + radius > s.minX && pos.x - radius < s.maxX)) continue;
@@ -352,7 +532,8 @@ export function makeBody(x = 0, y = 0, z = 0) {
   return {
     pos: { x, y, z }, vel: { x: 0, y: 0, z: 0 },
     onGround: false, groundNormal: { ...UP }, groundRamp: null,
-    surfRamp: null,                       // the steep ramp being ridden this tick, or null
+    surfRamp: null,                       // the steep wedge being ridden this tick, or null
+    surfNormal: null,                     // ...or the bare face normal, for brush geometry
     ducking: false, hullHeight: MOVE.standHeight,
     jumped: false, landed: false, wallHits: 0,
     /* per-tick telemetry the HUD reads (never fed back into movement) */
@@ -360,7 +541,7 @@ export function makeBody(x = 0, y = 0, z = 0) {
   };
 }
 
-const contact = { ramp: null };
+const contact = { ramp: null, normal: null };
 
 /**
  * One fixed simulation tick.
@@ -444,7 +625,7 @@ export function playerMove(body, cmd, dt) {
   const prevY = pos.y;
   const dist = Math.hypot(vel.x, vel.y, vel.z) * dt;
   const sub = Math.max(1, Math.min(16, Math.ceil(dist / M.subStepLen)));
-  contact.ramp = null;
+  contact.ramp = null; contact.normal = null;
   body.wallHits = 0;
   for (let i = 0; i < sub; i++) {
     pos.x += vel.x * dt / sub;
@@ -453,6 +634,7 @@ export function playerMove(body, cmd, dt) {
     body.wallHits += resolve(pos, vel, height, wasOnGround, M.radius, contact);
   }
   body.surfRamp = contact.ramp;
+  body.surfNormal = contact.normal;
 
   /* --- 6. categorise position --- */
   let grounded = false;
@@ -473,7 +655,16 @@ export function playerMove(body, cmd, dt) {
   }
   if (!grounded) { body.groundNormal = { ...UP }; body.groundRamp = null; }
   body.onGround = grounded;
-  body.surfRamp = grounded ? null : (contact.ramp || findSurfRamp(pos.x, pos.y, pos.z, M.radius));
+  if (grounded) { body.surfRamp = null; body.surfNormal = null; }
+  else if (contact.ramp || contact.normal) {
+    body.surfRamp = contact.ramp;
+    body.surfNormal = contact.normal || (contact.ramp ? contact.ramp.n : null);
+  } else {
+    const c = findSurfContact(pos.x, pos.y, pos.z, M.radius, height);
+    body.surfRamp = c ? c.ramp : null;
+    body.surfNormal = c ? c.n : null;
+  }
+  body.surfAngle = body.surfNormal ? Math.acos(Math.min(1, body.surfNormal.y)) * 180 / Math.PI : 0;
 
   /* --- 7. remaining half gravity (cleared next tick if still grounded) --- */
   vel.y -= M.gravity * 0.5 * dt;

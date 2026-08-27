@@ -9,7 +9,7 @@
 import { scene, camera, renderer, setFov } from './core.js';
 import { MOVE, RULES, SETTINGS, loadSettings, saveSettings } from './config.js';
 import { playerMove, triggersAt } from './physics.js';
-import { buildMap, MAP, MAPS, DEFAULT_MAP } from './map.js';
+import { buildMap, MAP, MAPS, DEFAULT_MAP, loadLocalMaps } from './map.js';
 import { worldStats } from './world.js';
 import { view, spawnAt, resetPlayer, beginTick, updateCamera } from './player.js';
 import { initInput, buildCommand, consumeLook, clearLook, endFrame, keyState, setSuspended, mouse } from './input.js';
@@ -421,6 +421,8 @@ function boot() {
   wireSettings(); syncSettingsUI();
   initTrail(); initGhost();
   selectMap(loadMapChoice());
+  // Courses from local/ (gitignored, offline only) join the picker if present.
+  loadLocalMaps().then(n => { if (n) renderMapPicker(); });
 
   initInput(renderer.domElement, {
     onKey,

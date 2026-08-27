@@ -14,6 +14,25 @@ export { MAP, DIR };
 
 export const MAPS = [aircontrol, helix].map(m => ({ ...m.meta, build: m.build }));
 
+/**
+ * Courses from `local/`, which is gitignored and never deployed.
+ *
+ * This is where a map you own goes. Content you did not make stays on your own
+ * machine: it cannot end up in the public repository or on the Pages build,
+ * because the directory it lives in is not in the repository at all. The
+ * import is dynamic and its absence is normal — the game runs without it.
+ */
+export async function loadLocalMaps() {
+  try {
+    const mod = await import('../local/index.js');
+    const extra = (mod.maps || []).filter(m => m && m.id && m.build);
+    for (const m of extra) if (!MAPS.some(e => e.id === m.id)) MAPS.push({ local: true, ...m });
+    return extra.length;
+  } catch (e) {
+    return 0;                                         // no local/index.js: expected
+  }
+}
+
 export const DEFAULT_MAP = "aircontrol";
 
 /** Build a course by id. Falls back to the default rather than throwing. */
