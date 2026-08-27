@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>surf_helix — a CS surf course in the browser</title>
+<meta name="description" content="A browser surf course on Source-engine movement: ride the ramps, strafe for every unit of speed, beat your own ghost.">
+<meta name="theme-color" content="#05070f">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#05070f; color:#e6ecff;
+    font-family:"Trebuchet MS","Segoe UI",sans-serif; user-select:none; }
+  #app { position:fixed; inset:0; }
+  canvas { display:block; }
+  .mono { font-family:"SFMono-Regular",Consolas,"Roboto Mono",monospace; font-variant-numeric:tabular-nums; }
+
+  /* ================= HUD ================= */
+  #hud { position:fixed; inset:0; pointer-events:none; z-index:10; }
+
+  #crosshair { position:absolute; left:50%; top:50%; }
+  #crosshair .ch { position:absolute; background:#35e0c8; box-shadow:0 0 3px #000; }
+
+  /* --- top: the clock --- */
+  #topbar { position:absolute; top:14px; left:50%; transform:translateX(-50%); text-align:center; }
+  #runTime { font-size:44px; font-weight:bold; line-height:1; letter-spacing:1px; text-shadow:0 2px 12px #000;
+    font-family:"SFMono-Regular",Consolas,monospace; font-variant-numeric:tabular-nums; }
+  #runStage { font-size:13px; letter-spacing:2.5px; color:#9fb0d8; margin-top:5px; text-transform:uppercase; }
+  #runPace { font-size:15px; font-weight:bold; height:18px; margin-top:2px;
+    font-family:"SFMono-Regular",Consolas,monospace; }
+
+  /* --- the ramp gauge: how much face you have left under you --- */
+  #rampBox { position:absolute; left:26px; top:50%; transform:translateY(-50%);
+    display:flex; align-items:center; gap:10px; opacity:0; transition:opacity .18s; }
+  #rampTrack { width:9px; height:190px; border-radius:5px; background:rgba(255,255,255,.08);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.10); position:relative; overflow:hidden; }
+  #rampFill { position:absolute; left:0; right:0; bottom:0; background:#35e0c8; border-radius:5px; height:0%; }
+  #rampTrack::after { content:""; position:absolute; left:-3px; right:-3px; bottom:12%; height:1px; background:rgba(255,90,122,.75); }
+  #rampMeta { font-size:10.5px; letter-spacing:1.6px; color:#8b98bd; writing-mode:vertical-rl; transform:rotate(180deg); }
+  #rampMeta b { color:#35e0c8; }
+
+  /* --- bottom row: keys | speedometer | records --- */
+  #bottom { position:absolute; left:0; right:0; bottom:18px; display:flex; align-items:flex-end;
+    justify-content:space-between; gap:18px; padding:0 20px; }
+  #speedo { flex:0 1 400px; text-align:center; }
+  #speedRow { display:flex; align-items:baseline; justify-content:center; gap:9px; }
+  #speedVal { font-size:66px; font-weight:bold; line-height:.92; text-shadow:0 3px 16px #000;
+    font-family:"SFMono-Regular",Consolas,monospace; font-variant-numeric:tabular-nums; }
+  #speedUnit { font-size:15px; color:#7d8aa6; letter-spacing:2px; }
+  #speedTrack { height:7px; background:rgba(255,255,255,.09); border-radius:4px; overflow:hidden; margin-top:8px;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.07); position:relative; }
+  #speedFill { height:100%; width:0%; border-radius:4px; transition:width .05s linear; }
+  /* the mark at 250 u/s: everything right of it you strafed for */
+  #speedTrack::after { content:""; position:absolute; left:20%; top:-3px; bottom:-3px; width:1px; background:rgba(255,255,255,.4); }
+  #speedMeta { display:flex; justify-content:space-between; font-size:11.5px; color:#7d8aa6; margin-top:6px; letter-spacing:.6px; }
+  #speedGain { font-weight:bold; }
+
+  /* --- bottom left: keys + sync --- */
+  #bl { flex:1 1 0; min-width:0; display:flex; align-items:flex-end; gap:14px; }
+  #keysOverlay { display:flex; flex-direction:column; gap:4px; align-items:center; }
+  .krow { display:flex; gap:4px; justify-content:center; }
+  .kcell { width:34px; height:30px; border-radius:5px; background:rgba(12,14,30,.62); border:1px solid #2b3358;
+    display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:bold; color:#6d7ba0;
+    transition:background .05s, color .05s, border-color .05s; }
+  .kcell.kwide { width:86px; font-size:10px; letter-spacing:1px; }
+  .kcell.kblank { background:none; border:none; }
+  .kcell.on { background:#35e0c8; border-color:#35e0c8; color:#04121a; box-shadow:0 0 12px rgba(53,224,200,.5); }
+  .kcell.on.dead { background:#ff5d8f; border-color:#ff5d8f; box-shadow:0 0 12px rgba(255,93,143,.5); }
+  #syncBox { width:150px; }
+  #syncHead { display:flex; justify-content:space-between; font-size:10.5px; color:#7d8aa6; letter-spacing:1.4px; margin-bottom:4px; }
+  #syncTrack { height:6px; background:rgba(255,255,255,.09); border-radius:3px; overflow:hidden;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.07); }
+  #syncFill { height:100%; width:0%; background:#ff5d8f; border-radius:3px; }
+  #syncNote { font-size:10px; color:#5c688a; margin-top:5px; line-height:1.35; }
+
+  /* --- bottom right: records --- */
+  #br { flex:1 1 0; min-width:0; text-align:right; }
+  #pbHead { font-size:10.5px; letter-spacing:2px; color:#7d8aa6; }
+  #pbVal { font-size:26px; font-weight:bold; color:#ffc23f; line-height:1.15;
+    font-family:"SFMono-Regular",Consolas,monospace; font-variant-numeric:tabular-nums; }
+  #splitList { margin-top:9px; display:flex; flex-direction:column; gap:2px; }
+  .srow { display:flex; justify-content:flex-end; gap:12px; font-size:11.5px; color:#8b98bd; }
+  .srow .sn { letter-spacing:.5px; }
+  .srow .sv { min-width:46px; text-align:right; color:#c3cfee;
+    font-family:"SFMono-Regular",Consolas,monospace; font-variant-numeric:tabular-nums; }
+  #runStats { margin-top:9px; font-size:11px; color:#5c688a; letter-spacing:.5px; }
+
+  /* --- centre message + split feed --- */
+  #centerMsg { position:absolute; left:50%; top:31%; transform:translateX(-50%); text-align:center;
+    opacity:0; transition:opacity .22s; width:min(780px, 88vw); }
+  #centerMsg .m { font-size:38px; font-weight:bold; letter-spacing:2px; text-shadow:0 4px 22px #000; }
+  #centerMsg .s { font-size:15px; color:#b7c4e6; margin-top:8px; text-shadow:0 2px 8px #000; }
+
+  #splitFeed { position:absolute; left:50%; top:calc(31% + 112px); transform:translateX(-50%);
+    display:flex; flex-direction:column; align-items:center; gap:5px; }
+  .split { background:rgba(8,10,22,.8); border:1px solid #2b3358; border-radius:6px; padding:5px 14px;
+    font-size:13px; display:flex; gap:11px; align-items:baseline; animation:sfade 4.2s ease-out forwards; }
+  .split span { color:#a9b6d8; font-family:"SFMono-Regular",Consolas,monospace; }
+  @keyframes sfade { 0%{opacity:0;transform:translateY(-8px);} 8%{opacity:1;transform:none;} 78%{opacity:1;} 100%{opacity:0;} }
+
+  @media (max-width:1180px) {
+    #speedVal { font-size:52px; }
+    #speedo { flex-basis:310px; }
+    #syncBox { width:118px; }
+    #syncNote { display:none; }
+    #runTime { font-size:36px; }
+    #rampTrack { height:150px; }
+  }
+  @media (max-width:900px) {
+    #syncBox { display:none !important; }
+    #splitList { display:none; }
+    .kcell { width:28px; height:25px; font-size:10px; }
+    .kcell.kwide { width:66px; }
+    #rampMeta { display:none; }
+  }
+  @media (max-width:700px) {
+    #keysOverlay { display:none !important; }
+    #speedVal { font-size:44px; }
+    #rampBox { left:10px; }
+  }
+  @media (max-height:620px) {
+    #centerMsg { top:19%; }
+    #centerMsg .m { font-size:32px; }
+    #rampTrack { height:120px; }
+  }
+
+  /* ================= panels ================= */
+  .panel { position:fixed; inset:0; z-index:30; display:none; align-items:center; justify-content:center;
+    background:rgba(3,5,12,.74); backdrop-filter:blur(3px); overflow:auto; padding:20px; }
+  .panel.show { display:flex; }
+  .card { background:#0a0d1c; border:1px solid #23305a; border-radius:12px; padding:26px 30px;
+    box-shadow:0 24px 80px rgba(0,0,0,.7); pointer-events:auto; }
+  h1 { font-size:40px; letter-spacing:2px; }
+  h1 .accent { color:#35e0c8; }
+  h2 { font-size:20px; letter-spacing:1px; margin-bottom:4px; }
+  .muted { color:#7d8aa6; font-size:13px; line-height:1.6; }
+  .btn { pointer-events:auto; border:none; border-radius:8px; font-weight:bold; cursor:pointer;
+    font-family:inherit; transition:filter .12s; }
+  .btn:hover { filter:brightness(1.12); }
+  .btn.primary { background:linear-gradient(#35e0c8,#12a08f); color:#04121a; font-size:18px; padding:13px 46px;
+    box-shadow:0 8px 26px rgba(53,224,200,.26); }
+  .btn.ghost { background:#151832; color:#c3cfee; border:1px solid #2b3358; font-size:13px; padding:9px 20px; }
+
+  /* start */
+  #startCard { width:760px; max-width:100%; text-align:center; }
+  #startPB { color:#ffc23f; font-size:14px; margin:10px 0 4px; font-family:"SFMono-Regular",Consolas,monospace; }
+  .lede { color:#b7c4e6; font-size:15px; line-height:1.65; margin:14px auto 0; max-width:620px; }
+  .lede b { color:#35e0c8; }
+  .rule { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:20px 0 6px; text-align:left; }
+  .rulebox { background:#0f1329; border:1px solid #23305a; border-radius:9px; padding:12px 14px; }
+  .rulebox .h { font-size:12px; letter-spacing:1.6px; color:#35e0c8; margin-bottom:6px; }
+  .rulebox.no .h { color:#ff5d8f; }
+  .rulebox p { font-size:12.5px; color:#9fb0d8; line-height:1.55; }
+  .keys { display:grid; grid-template-columns:repeat(2,1fr); gap:5px 24px; text-align:left; font-size:12.5px;
+    color:#9fb0d8; margin:16px 4px 0; }
+  .keys b { color:#e6ecff; display:inline-block; min-width:112px; }
+  .legal { font-size:11px; color:#4d5678; margin-top:18px; line-height:1.6; }
+  /* A surf ramp is held with a mouse. Say so rather than letting a phone find out. */
+  #touchNote { display:none; margin-top:16px; padding:10px 14px; border-radius:9px;
+    background:#2a1220; border:1px solid #52233a; color:#ffb0c6; font-size:12.5px; line-height:1.5; }
+  @media (pointer: coarse) { #touchNote { display:block; } }
+  @media (max-width:560px) {
+    .rule { grid-template-columns:1fr; }
+    .keys { grid-template-columns:1fr; }
+    #startCard, #pauseCard, #resultsCard, #recordsCard { padding:20px 18px; }
+    h1 { font-size:32px; }
+    #stageBtns { grid-template-columns:repeat(2,1fr); }
+  }
+
+  /* pause / settings */
+  #pauseCard { width:470px; max-width:100%; }
+  .opt { display:flex; align-items:center; gap:12px; font-size:13.5px; padding:7px 0; border-bottom:1px solid #161c36; }
+  .opt:last-of-type { border-bottom:none; }
+  .opt .lbl { flex:1; }
+  .opt .hint { display:block; font-size:11px; color:#6d7ba0; margin-top:2px; }
+  .opt input[type=range] { width:150px; accent-color:#35e0c8; }
+  .opt .val { width:48px; text-align:right; color:#8b98bd; font-size:12px;
+    font-family:"SFMono-Regular",Consolas,monospace; }
+  .sw { position:relative; width:40px; height:21px; flex:none; }
+  .sw input { opacity:0; width:0; height:0; }
+  .sw .tr { position:absolute; inset:0; background:#2b3358; border-radius:21px; transition:.15s; cursor:pointer; }
+  .sw .tr:before { content:""; position:absolute; width:15px; height:15px; left:3px; top:3px; background:#fff;
+    border-radius:50%; transition:.15s; }
+  .sw input:checked + .tr { background:#35e0c8; }
+  .sw input:checked + .tr:before { transform:translateX(19px); }
+  .row { display:flex; gap:9px; margin-top:18px; flex-wrap:wrap; }
+  .row .btn { flex:1; min-width:120px; }
+
+  /* stage select */
+  #stageBtns { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-top:10px; }
+  #stageBtns .btn { font-size:12px; padding:9px 4px; }
+
+  /* results */
+  #resultsCard { width:580px; max-width:100%; text-align:center; }
+  #resultsTime { font-size:52px; font-weight:bold; line-height:1;
+    font-family:"SFMono-Regular",Consolas,monospace; font-variant-numeric:tabular-nums; }
+  #resultsDelta { font-size:14px; margin-top:6px; font-family:"SFMono-Regular",Consolas,monospace; }
+  .rtable { width:100%; border-collapse:collapse; margin-top:18px; font-size:13px; }
+  .rtable th { font-size:10.5px; letter-spacing:1.4px; color:#6d7ba0; text-align:left; padding:0 8px 6px; font-weight:normal; }
+  .rtable td { padding:6px 8px; border-top:1px solid #161c36; text-align:left; }
+  .rtable .num { text-align:right; font-family:"SFMono-Regular",Consolas,monospace; font-variant-numeric:tabular-nums; }
+  .rtable .good { color:#9dff64; font-weight:bold; font-size:11px; letter-spacing:1px; }
+  .rmeta { margin-top:14px; font-size:12.5px; color:#8b98bd; }
+  .rmeta b { color:#e6ecff; }
+
+  /* records overlay (Tab) */
+  #recordsPanel { background:rgba(3,5,12,.55); }
+  #recordsCard { width:540px; max-width:100%; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<!-- ================= HUD ================= -->
+<div id="hud">
+  <div id="crosshair"></div>
+
+  <div id="topbar">
+    <div id="runTime">0:00.00</div>
+    <div id="runStage">START</div>
+    <div id="runPace"></div>
+  </div>
+
+  <div id="rampBox">
+    <div id="rampTrack"><div id="rampFill"></div></div>
+    <div id="rampMeta">ON THE FACE <b id="rampAngle"></b></div>
+  </div>
+
+  <div id="centerMsg"><div class="m"></div><div class="s"></div></div>
+  <div id="splitFeed"></div>
+
+  <div id="bottom">
+  <div id="bl">
+    <div id="keysOverlay"></div>
+    <div id="syncBox">
+      <div id="syncHead"><span>STRAFE SYNC</span><span id="syncVal">0%</span></div>
+      <div id="syncTrack"><div id="syncFill"></div></div>
+      <div id="syncNote">how much of the possible gain your last few ticks actually took</div>
+    </div>
+  </div>
+
+  <div id="speedo">
+    <div id="speedRow"><div id="speedVal">0</div><div id="speedUnit">U/S</div></div>
+    <div id="speedTrack"><div id="speedFill"></div></div>
+    <div id="speedMeta">
+      <span id="speedGain">GROUNDED</span>
+      <span>peak <b id="speedPeak">0</b></span>
+    </div>
+  </div>
+
+  <div id="br">
+    <div id="pbHead">PERSONAL BEST</div>
+    <div id="pbVal">--:--.--</div>
+    <div id="splitList"></div>
+    <div id="runStats"></div>
+  </div>
+  </div>
+</div>
+
+<!-- ================= START ================= -->
+<div class="panel show" id="startPanel"><div class="card" id="startCard">
+  <h1>surf<span class="accent">_helix</span></h1>
+  <div class="muted" style="margin-top:6px">a surf course · Source movement, ridden by hand</div>
+  <div id="startPB">no personal best yet</div>
+
+  <p class="lede">
+    A surf ramp is too steep to stand on, so you never land on one — you fall <em>along</em> it, and the
+    game deletes only the part of your velocity going into the face. Gravity pulls you down the slope.
+    <b>Strafing pulls you back up it, and turns the fall into speed.</b>
+    Hold <b>one</b> key, turn the mouse the same way, and do not stop.
+  </p>
+
+  <div class="rule">
+    <div class="rulebox">
+      <div class="h">THIS WORKS</div>
+      <p>Hold <b>A</b> and swing the mouse left, or <b>D</b> and swing right — whichever one pushes you
+         <em>up</em> the face you are on. Keep the turn going the whole way down the ramp. When the ramp
+         leans the other way, swap keys.</p>
+    </div>
+    <div class="rulebox no">
+      <div class="h">THIS DOES NOTHING</div>
+      <p>Holding <b>W</b>. Holding a strafe key without turning. Turning without a strafe key.
+         Jumping — you are not standing on anything, so there is nothing to jump off.
+         Sliding off the low edge is a fall, and falls cost you the clock.</p>
+    </div>
+  </div>
+
+  <div class="keys">
+    <div><b>W A S D</b> move</div><div><b>Mouse</b> look</div>
+    <div><b>Space / wheel</b> jump (on flat ground)</div><div><b>Ctrl / C</b> duck</div>
+    <div><b>R</b> restart run</div><div><b>Q</b> back to checkpoint</div>
+    <div><b>Tab</b> records</div><div><b>Esc</b> settings &amp; stage select</div>
+    <div><b>F1</b> auto-hop</div><div><b>F2 / F3</b> key + sync display</div>
+  </div>
+
+  <div id="touchNote">This one needs a <b>mouse and a keyboard</b>. The whole game is turning the mouse
+    a few degrees at a time while holding a strafe key — there is no touch control that can stand in for it.</div>
+
+  <div style="margin-top:22px"><button id="playBtn" class="btn primary" disabled>Loading…</button></div>
+  <div class="legal">
+    Original game. The movement reproduces the Source-engine model — friction, ground acceleration, the
+    45.6&deg; standable-surface threshold and the 30&nbsp;u/s air wish-speed cap — from public documentation.
+    All geometry, art and code are original; no Valve assets are used.
+  </div>
+</div></div>
+
+<!-- ================= PAUSE / SETTINGS ================= -->
+<div class="panel" id="pausePanel"><div class="card" id="pauseCard">
+  <h2>Paused</h2>
+  <div class="muted" style="margin-bottom:14px">Esc to resume</div>
+
+  <div class="opt"><span class="lbl">Sensitivity</span><input id="optSens" type="range" min="0.3" max="8" step="0.05"><span class="val" id="optSensVal">2.20</span></div>
+  <div class="opt"><span class="lbl">Field of view</span><input id="optFov" type="range" min="70" max="120" step="1"><span class="val" id="optFovVal">90°</span></div>
+  <div class="opt">
+    <span class="lbl">Auto-hop<span class="hint">Holds the jump timing on flat ground. Direction is never assisted, and it does nothing on a ramp.</span></span>
+    <label class="sw"><input id="optAutohop" type="checkbox"><span class="tr"></span></label>
+  </div>
+  <div class="opt"><span class="lbl">Personal-best ghost<span class="hint">Your own fastest run, replayed alongside you.</span></span><label class="sw"><input id="optGhost" type="checkbox"><span class="tr"></span></label></div>
+  <div class="opt"><span class="lbl">Key display</span><label class="sw"><input id="optKeys" type="checkbox"><span class="tr"></span></label></div>
+  <div class="opt"><span class="lbl">Strafe sync meter</span><label class="sw"><input id="optSync" type="checkbox"><span class="tr"></span></label></div>
+  <div class="opt"><span class="lbl">Camera lean</span><label class="sw"><input id="optRoll" type="checkbox"><span class="tr"></span></label></div>
+  <div class="opt"><span class="lbl">Speed lines</span><label class="sw"><input id="optLines" type="checkbox"><span class="tr"></span></label></div>
+  <div class="opt"><span class="lbl">Sound</span><label class="sw"><input id="optSound" type="checkbox"><span class="tr"></span></label></div>
+
+  <div style="margin-top:16px">
+    <div class="muted" style="font-size:11px;letter-spacing:1.6px">PRACTICE A STAGE <span style="color:#6d7ba0;letter-spacing:0">— this ends the current run</span></div>
+    <div id="stageBtns"></div>
+  </div>
+
+  <div class="row">
+    <button id="btnResume" class="btn primary" style="font-size:14px;padding:11px">RESUME</button>
+    <button id="btnRestart" class="btn ghost">RESTART RUN</button>
+  </div>
+  <div class="row"><button id="btnWipe" class="btn ghost">Erase records &amp; ghost</button></div>
+</div></div>
+
+<!-- ================= RESULTS ================= -->
+<div class="panel" id="resultsPanel"><div class="card" id="resultsCard">
+  <h2 id="resultsTitle">RUN COMPLETE</h2>
+  <div id="resultsTime">0:00.00</div>
+  <div id="resultsDelta"></div>
+  <div id="resultsBody"></div>
+  <div class="row">
+    <button id="btnAgain" class="btn primary" style="font-size:14px;padding:11px">RUN AGAIN</button>
+    <button id="btnCloseResults" class="btn ghost">Close</button>
+  </div>
+</div></div>
+
+<!-- ================= RECORDS (Tab) ================= -->
+<div class="panel" id="recordsPanel"><div class="card" id="recordsCard">
+  <h2>surf_helix — records</h2>
+  <div id="recordsBody" class="muted"></div>
+</div></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

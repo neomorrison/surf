@@ -1,0 +1,13 @@
+{
+  "name": "surf-helix",
+  "version": "1.0.0",
+  "description": "A browser CS-style surf course on a faithful port of Source-engine movement.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --import ./test/register.mjs --test test/*.test.mjs",
+    "trace": "node --import ./test/register.mjs test/trace.mjs",
+    "serve": "python3 -m http.server 8137"
+  },
+  "license": "MIT"
+}
