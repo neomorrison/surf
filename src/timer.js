@@ -10,10 +10,13 @@
    the next attempt can be raced against it.                               */
 import { MAP } from './map.js';
 
-const LS_KEY = "surf.records.v1";
-const LS_GHOST = "surf.ghost.v1";
+/* Records are per map, so the keys carry the map id. */
+const LS_KEY = id => "surf.records.v1:" + id;
+const LS_GHOST = id => "surf.ghost.v1:" + id;
 const GHOST_HZ = 16;
 const GHOST_EVERY = Math.round(128 / GHOST_HZ);      // ticks between samples
+
+const BLANK = { best: null, splits: [], stageBest: [], runs: 0, topSpeed: 0 };
 
 export const RUN = {
   state: "idle",            // idle | running | finished
@@ -30,35 +33,47 @@ export const RUN = {
   traceTick: 0,
 };
 
-export const RECORDS = { best: null, splits: [], stageBest: [], runs: 0, topSpeed: 0 };
+export const RECORDS = { ...BLANK };
 
 /** The personal-best run, replayed. `null` until one exists. */
 export const GHOST = { points: null, hz: GHOST_HZ, time: null };
 
+/** Load the records and ghost for whichever map is currently built. */
 export function loadRecords() {
+  Object.assign(RECORDS, BLANK, { splits: [], stageBest: [] });
+  GHOST.points = null; GHOST.time = null;
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = localStorage.getItem(LS_KEY(MAP.id));
     if (raw) Object.assign(RECORDS, JSON.parse(raw));
   } catch (e) {}
   try {
-    const raw = localStorage.getItem(LS_GHOST);
+    const raw = localStorage.getItem(LS_GHOST(MAP.id));
     if (raw) { const g = JSON.parse(raw); GHOST.points = g.p; GHOST.time = g.t; }
   } catch (e) {}
   return RECORDS;
 }
+
+/** Peek at another map's personal best without building it — for the map picker. */
+export function readBest(id) {
+  try {
+    const raw = localStorage.getItem(LS_KEY(id));
+    return raw ? JSON.parse(raw).best : null;
+  } catch (e) { return null; }
+}
+
 function saveRecords() {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(RECORDS)); } catch (e) {}
+  try { localStorage.setItem(LS_KEY(MAP.id), JSON.stringify(RECORDS)); } catch (e) {}
 }
 function saveGhost() {
   try {
-    localStorage.setItem(LS_GHOST, JSON.stringify({ t: GHOST.time, p: GHOST.points }));
+    localStorage.setItem(LS_GHOST(MAP.id), JSON.stringify({ t: GHOST.time, p: GHOST.points }));
   } catch (e) { /* quota — the run still counts, you just cannot race it */ }
 }
 export function clearRecords() {
-  RECORDS.best = null; RECORDS.splits = []; RECORDS.stageBest = []; RECORDS.runs = 0; RECORDS.topSpeed = 0;
+  Object.assign(RECORDS, BLANK, { splits: [], stageBest: [] });
   GHOST.points = null; GHOST.time = null;
   saveRecords();
-  try { localStorage.removeItem(LS_GHOST); } catch (e) {}
+  try { localStorage.removeItem(LS_GHOST(MAP.id)); } catch (e) {}
 }
 
 export function formatTime(t) {
@@ -135,7 +150,9 @@ export function onCheckpoint(index) {
 
 export function onFinish() {
   if (RUN.state !== "running") return null;
-  if (RUN.splits[MAP.checkpoints.length - 1] == null) return null;   // must have run the whole course
+  // On a checkpointed map you must have taken the last one; a one-shot map has
+  // none to take, and crossing the start gate is the only way to be running.
+  if (MAP.checkpoints.length && RUN.splits[MAP.checkpoints.length - 1] == null) return null;
   RUN.state = "finished";
 
   const time = RUN.time;

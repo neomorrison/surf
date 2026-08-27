@@ -42,6 +42,9 @@ export const MOVE = {
 
   /* jumping */
   jumpVel: 301.993,        // the CS jump apex of ~57 units at g=800
+  bunnyhopFactor: 1.2,     // BUNNYJUMP_MAX_SPEED_FACTOR. With bunnyhopping disabled, Source
+                           // scales your velocity back to 1.2 x maxSpeed on the tick you
+                           // jump — so 300 u/s, and a hop can never hand you anything.
 
   /* hull */
   radius: 16,              // half-width of the (square, Source-style) player hull
@@ -61,6 +64,27 @@ export const MOVE = {
                            // not as a surface to be lifted onto
 };
 
+/* ============================== server rules ==============================
+   The settings a surf server actually runs, as opposed to the movement
+   constants above. A map declares these and buildMap() applies them, so the
+   rulebook in physics.js stays free of any dependency on map data.        */
+
+const DEFAULT_RULES = {
+  bunnyhopping: true,      // sv_enablebunnyhopping. false = the 1.2x jump cap above,
+                           // which is what every surf timer server runs: on those
+                           // servers a hop is a way to move, never a way to gain.
+  oneShot: false,          // no checkpoints — a fall ends the run and restarts the clock
+};
+
+export const RULES = { ...DEFAULT_RULES };
+
+/** Replace the rule set wholesale. Anything a map does not name goes back to default. */
+export function applyRules(o) {
+  for (const k in DEFAULT_RULES) RULES[k] = DEFAULT_RULES[k];
+  if (o) for (const k in o) if (k in RULES) RULES[k] = o[k];
+  return RULES;
+}
+
 /* Angle helpers — maps are authored in degrees because that is how a surf
    ramp is actually thought about ("a 55 is rideable, a 70 is not"). */
 export const slopeOf = deg => Math.tan(deg * Math.PI / 180);
@@ -79,7 +103,6 @@ export const SETTINGS = {
   showGhost: true,         // replay of your personal best
   viewRoll: true,          // camera leans into the strafe you are holding
   sound: true,
-  speedLines: true,
 };
 
 export function loadSettings() {

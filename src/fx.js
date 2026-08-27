@@ -2,7 +2,7 @@
    Transient visuals. All of it is feedback about motion — at 1100 u/s a
    still frame looks exactly like one at 250, so the game has to say so.   */
 import * as THREE from 'three';
-import { scene, camera } from './core.js';
+import { scene } from './core.js';
 import { NEON } from './world.js';
 
 const live = [];
@@ -114,44 +114,4 @@ export function setGhost(p) {
   if (!p) { ghostMesh.visible = false; return; }
   ghostMesh.visible = true;
   ghostMesh.position.set(p.x, p.y + 36, p.z);
-}
-
-/* ---------------- speed lines ----------------
-   A cage of streaks parented to the camera. They only appear past the speed
-   you get for free, so seeing them at all means you earned something. */
-const LINES = 128;
-let streaks = null, streakBase = null;
-export function initSpeedLines() {
-  const pos = new Float32Array(LINES * 6);
-  streakBase = new Float32Array(LINES * 3);
-  let seed = 7;
-  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-  for (let i = 0; i < LINES; i++) {
-    const a = rnd() * Math.PI * 2, r = 40 + rnd() * 190;
-    streakBase[i * 3] = Math.cos(a) * r;
-    streakBase[i * 3 + 1] = Math.sin(a) * r;
-    streakBase[i * 3 + 2] = -60 - rnd() * 700;
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  streaks = new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-    color: 0xbfe9ff, transparent: true, opacity: 0, depthWrite: false, fog: false,
-  }));
-  streaks.frustumCulled = false;
-  camera.add(streaks);
-}
-export function updateSpeedLines(speed, dt, on = true) {
-  if (!streaks) return;
-  const show = on ? Math.max(0, Math.min(1, (speed - 320) / 700)) : 0;
-  streaks.material.opacity += (show * 0.5 - streaks.material.opacity) * Math.min(1, dt * 8);
-  if (streaks.material.opacity < 0.005) { streaks.visible = false; return; }
-  streaks.visible = true;
-  const len = 40 + show * 340;
-  const p = streaks.geometry.attributes.position.array;
-  for (let i = 0; i < LINES; i++) {
-    const bx = streakBase[i * 3], by = streakBase[i * 3 + 1], bz = streakBase[i * 3 + 2];
-    p[i * 6] = bx; p[i * 6 + 1] = by; p[i * 6 + 2] = bz;
-    p[i * 6 + 3] = bx; p[i * 6 + 4] = by; p[i * 6 + 5] = bz + len;
-  }
-  streaks.geometry.attributes.position.needsUpdate = true;
 }

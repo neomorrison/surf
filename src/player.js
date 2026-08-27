@@ -71,12 +71,11 @@ export function updateCamera(alpha, dt) {
   }
   view.roll += (targetRoll - view.roll) * Math.min(1, dt * 8);
 
-  // FOV opens up with speed. It starts at the free 250, so any widening at all
-  // is speed you strafed for.
-  const kick = Math.max(0, Math.min(26, (b.speed - MOVE.maxSpeed) / 30));
-  const targetFov = SETTINGS.fov + kick;
-  if (Math.abs(view.fov - targetFov) > 0.02) {
-    view.fov += (targetFov - view.fov) * Math.min(1, dt * 5);
+  // The field of view is whatever the player set it to and nothing else. A FOV
+  // that widens with speed reads as speed you did not earn, and it moves the
+  // ramp edge under your crosshair while you are trying to hold a line.
+  if (Math.abs(view.fov - SETTINGS.fov) > 0.01) {
+    view.fov = SETTINGS.fov;
     camera.fov = view.fov; camera.updateProjectionMatrix();
   }
 

@@ -2,7 +2,7 @@
    Source movement; if one of them drifts, the feel drifts with it. */
 import test from 'node:test';
 import assert from 'node:assert';
-import { MOVE, slopeOf } from '../src/config.js';
+import { MOVE, RULES, slopeOf, applyRules } from '../src/config.js';
 import {
   makeBody, playerMove, clearPhysics, solid, rampVolume, clipVelocity,
   findGround, rampLocal, rampUphill, findSurfRamp,
@@ -77,6 +77,46 @@ test('friction bleeds speed at sv_friction, and jumping skips it', () => {
   assert.ok(j.jumped && j.vel.y > 290, 'and leaves the ground: ' + j.vel.y.toFixed(1));
 });
 
+/* ---------------- surf-server rules ---------------- */
+
+test('with bunnyhopping off, a hop can never hand you speed', () => {
+  applyRules({ bunnyhopping: false });
+  floorWorld();
+  const cap = MOVE.maxSpeed * MOVE.bunnyhopFactor;
+  for (const start of [260, 400, 900, 1600]) {
+    const b = makeBody(0, 0, 0);
+    b.onGround = true; b.vel.z = -start;
+    playerMove(b, { forward: 0, side: 0, yaw: 0, jump: true }, TICK);
+    const after = Math.hypot(b.vel.x, b.vel.z);
+    assert.ok(b.jumped, 'the hop still happens');
+    near(after, Math.min(start, cap), 0.01, `hop from ${start}`);
+  }
+  applyRules({});
+  near(cap, 300, 1e-9, 'BUNNYJUMP_MAX_SPEED_FACTOR x 250');
+});
+
+test('with bunnyhopping on, a frame-perfect hop keeps everything', () => {
+  applyRules({ bunnyhopping: true });
+  floorWorld();
+  const b = makeBody(0, 0, 0);
+  b.onGround = true; b.vel.z = -900;
+  playerMove(b, { forward: 0, side: 0, yaw: 0, jump: true }, TICK);
+  near(Math.hypot(b.vel.x, b.vel.z), 900, 0.001, 'nothing taken');
+  applyRules({});
+});
+
+test('the bunnyhop cap never touches a ramp, because a ramp is never ground', () => {
+  applyRules({ bunnyhopping: false });
+  const r = rampWorld(55);
+  const b = surf(r, 128 * 4);
+  // holding jump the whole way down changes nothing: onGround is false throughout
+  const b2 = surf(r, 128 * 4, { jump: true });
+  assert.ok(!b.onGround && !b2.onGround);
+  near(b2.speed, b.speed, 0.001, 'jump held vs not held');
+  assert.ok(b.speed > 500, 'and it is still a real ride: ' + b.speed.toFixed(0));
+  applyRules({});
+});
+
 /* ---------------- surfaces ---------------- */
 
 test('45.6 degrees is the line between a floor and a slide', () => {
@@ -119,7 +159,7 @@ function surf(r, ticks, opts = {}) {
     const climbRate = b.vel.x * up.x + b.vel.z * up.z;
     const climb = (1.1 * (0 - u) * Math.sign(r.slope) - climbRate) >= 0 ? 1 : -1;
     const w = (p.x * up.x + p.z * up.z) * climb >= 0 ? p : { x: -p.x, z: -p.z };
-    playerMove(b, { forward: 0, side: 1, yaw: Math.atan2(-w.z, w.x), jump: false }, TICK);
+    playerMove(b, { forward: 0, side: 1, yaw: Math.atan2(-w.z, w.x), jump: !!opts.jump }, TICK);
   }
   return b;
 }

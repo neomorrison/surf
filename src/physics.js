@@ -25,7 +25,7 @@
      accelerates you down the slope; the strafe is what you use to climb
      back up it and to convert that fall into forward speed.               */
 
-import { MOVE } from './config.js';
+import { MOVE, RULES } from './config.js';
 
 export const SOLIDS = [];
 export const RAMPS = [];
@@ -400,6 +400,16 @@ export function playerMove(body, cmd, dt) {
 
   /* --- 2. jump (before friction: that is why a frame-perfect hop keeps speed) --- */
   if (cmd.jump && body.onGround) {
+    /* Source's anti-bunnyhop, and the reason surf times are about ramps and
+       nothing else: with sv_enablebunnyhopping off, the tick you jump your
+       horizontal velocity is scaled back to 1.2 x maxSpeed. You can still hop
+       to move, but a hop can never hand you speed — every unit above 300 has
+       to come off a ramp face. */
+    if (!RULES.bunnyhopping) {
+      const cap = M.maxSpeed * M.bunnyhopFactor;
+      const spd = Math.hypot(vel.x, vel.z);
+      if (spd > cap) { const k = cap / spd; vel.x *= k; vel.z *= k; }
+    }
     vel.y = M.jumpVel;
     body.onGround = false; body.groundRamp = null; body.jumped = true;
   }

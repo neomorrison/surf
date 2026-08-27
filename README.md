@@ -1,12 +1,16 @@
-# surf_helix
+# surf
 
-A browser **CS surf** course. Source-engine movement, ported faithfully and run by hand — no
-auto-strafe, no speed multipliers, no assists. Five stages spiral 5,800 units down through the
-void, and the only thing that gets you to the bottom is how well you hold a line on a ramp.
+Browser **CS surf**. Source-engine movement, ported faithfully and run by hand — no auto-strafe,
+no speed multipliers, no assists. Two courses:
 
-**[▶ Play it here](https://neomorrison.github.io/surf/)**
+| | |
+|---|---|
+| **surf_aircontrol** | One shot, six ramps, **no checkpoints**. Timer-server rules: no bhop gain, 350 prespeed. The flights between the ramps are the map. |
+| **surf_helix** | Five stages, four checkpoints, bunnyhopping on. Falling costs you the clock, not the run. |
 
-![Riding the 60-degree face of THE SPINE, with the four stages already surfed hanging above it](docs/surf-spine.jpg)
+**[▶ Play them here](https://neomorrison.github.io/surf/)**
+
+![Late in surf_aircontrol: the violet face of ramp five, with ramp six and the finish already visible below it](docs/surf-aircontrol.jpg)
 
 It is served as ES modules, so it has to come over **HTTP** (modules will not load from `file://`):
 
@@ -71,6 +75,38 @@ Two consequences fall straight out of the arithmetic, and both are measured in
 
 Sliding off the low edge is a fall. Holding a line is the skill.
 
+## The surf-server rules
+
+`surf_aircontrol` runs the settings an actual surf timer server runs, and they change what a
+finishing time means.
+
+**Bunnyhopping off.** With `sv_enablebunnyhopping 0`, Source scales your horizontal velocity back
+to `BUNNYJUMP_MAX_SPEED_FACTOR` (1.2) times max speed on the tick you jump:
+
+```js
+if (!RULES.bunnyhopping) {
+  const cap = M.maxSpeed * M.bunnyhopFactor;          // 250 * 1.2 = 300
+  const spd = Math.hypot(vel.x, vel.z);
+  if (spd > cap) { const k = cap / spd; vel.x *= k; vel.z *= k; }
+}
+vel.y = M.jumpVel;
+```
+
+So hopping is a way to move around the start platform and nothing else — 260 u/s stays 260, but
+500, 900 and 1500 all come out at exactly 300. Note where the check sits: it needs `onGround`, and
+a surf ramp is never ground, so it can never touch you mid-ride.
+
+**Prespeed capped at 350.** A zone over the spawn clamps your horizontal speed while you are
+inside it, the way a timer server's start zone does, so no run can begin with speed carried in
+from outside it.
+
+**One shot.** No checkpoints. A kill volume hangs under every segment of the ride line, and
+touching one ends the run and resets the clock.
+
+Together those mean every unit above 300 u/s in a `surf_aircontrol` time came off a ramp face.
+`surf_helix` leaves bunnyhopping on — its first stage has a floor that is *meant* to be hopped —
+so the two courses ask for different things on purpose.
+
 ## The collision, exactly
 
 A ramp is a yaw-rotated wedge: a footprint rectangle with a top face that slopes across it. That
@@ -93,11 +129,11 @@ fraction of a unit of the plane rather than hovering or sinking. Movement is int
 three axes at once and sub-stepped to at most 7 units per collision pass, so a hull doing 1,900
 u/s never skips through a face.
 
-## The course
+## The courses
 
-`surf_helix` is generated from a **ride line**, not from coordinates. The cursor in
-[`src/map.js`](src/map.js) tracks where a player is expected to actually *be* — a point part-way
-up a face — and every piece is hung off that. Air sections are authored ballistically:
+Both maps are generated from a **ride line**, not from coordinates. The cursor in
+[`src/mapkit.js`](src/mapkit.js) tracks where a player is expected to actually *be* — a point
+part-way up a face — and every piece is hung off that. Air sections are authored ballistically:
 
 ```js
 gap(700, 760);      // 700 units of air at 760 u/s -> drops the cursor 339 units
@@ -105,6 +141,46 @@ gap(700, 760);      // 700 units of air at 760 u/s -> drops the cursor 339 units
 
 so the next ramp gets placed under wherever that really puts you. That is why the drops line up
 instead of needing to be nudged by hand.
+
+### surf_aircontrol
+
+An air-control course in the tradition of the KSF-timer air_control maps: a single unbroken run
+down one corridor where the ramps are generous and the *flights between them* are the difficulty.
+It is an original course built to that shape — not a port of any existing community map, and it
+shares no geometry with one.
+
+The start platform ends 170 units short of the first face and 171 units above it, so you walk off
+the lip and you are already surfing. After that, every flight asks for more speed than the last
+and moves you further sideways than the last:
+
+```
+  flight    span   sideways    drop    needs
+            904        420     666      700 u/s
+           1103        560     723      820 u/s
+           1293        680     790      920 u/s
+           1484        800     881     1000 u/s
+           1664        900     950     1080 u/s
+           1200          0     436     1150 u/s
+```
+
+The sideways column is the whole point. A flight that only goes forwards is a wait; one that also
+goes 900 units left has to be *steered*, and steering in the air is the same 30 u/s wish cap doing
+a different job. Two of the flights drop a frame on the ride line at their midpoint — something to
+aim at, deliberately **not** solid. A wall you have to thread is the obvious way to test air
+control, but the honest punishment for a bad line already exists: you arrive at the next ramp off
+to one side and slide off it. Adding an instant death on top of that, in a map with no
+checkpoints, at a position the generator can only estimate because it cannot know how early you
+will start your turn, would be punishing you for its arithmetic rather than for your flying.
+
+The flights are also kept short in *time* on purpose. Drop follows from hang time, so a long
+lazy flight would turn the map into a drop tower and hand you speed that gravity earned instead
+of you — the first draft descended 10,000 units and peaked at 2,400 u/s doing exactly that.
+
+![The violet aim frame mid-flight, with the next ramp behind it and the corridor's monoliths either side](docs/surf-aircontrol-gate.jpg)
+
+### surf_helix
+Five stages spiralling 5,800 units down through the void, each ending on a catch pad with a
+checkpoint.
 
 ```
   stage          ramps   angles      enters at   leaves at   kill floor
@@ -127,11 +203,11 @@ instead of needing to be nudged by hand.
 - **5 · THE SPINE** — one 60° face, seven thousand units long, with no wall opposite to save a bad
   line.
 
-![The course seen from outside: the SWITCHBACK face, THE GAP in rose and THE SPINE and finish in amber, all floating in the void](docs/surf-course.jpg)
-
 Each stage ends on a catch pad big enough to collect a player arriving anywhere from the floor to
 a thousand units up, with a checkpoint that spans it. Falling does not end a run — you go back to
 the last checkpoint and **the clock keeps going**, which is the only punishment a surfer respects.
+
+![surf_helix seen from outside: the SWITCHBACK face, THE GAP in rose and THE SPINE and finish in amber, all floating in the void](docs/surf-course.jpg)
 
 ## The course is proved runnable, not assumed to be
 
@@ -142,33 +218,48 @@ you toward 45% up the face (damped by how fast you are already climbing, or it c
 plane) or rotates you toward where you have to land. Perpendicular is provably optimal, so where
 the bot fails, the course is at fault.
 
-It runs every stage from a standing start on the checkpoint you would respawn at:
+It plays `surf_helix` a stage at a time, from a standing start on the checkpoint you would
+respawn at, and `surf_aircontrol` in one piece with nothing to fall back on:
 
 ```
-  stage           result      time   peak u/s   on-ramp   mouse
-  DROP IN        cleared      50.6s       790        48%    3.8 rad/s
-  SWITCHBACK     cleared      21.6s      1186        56%    3.8 rad/s
-  THE BEND       cleared      17.4s      1096        65%    3.8 rad/s
-  THE GAP        cleared      17.4s      1183        46%    3.8 rad/s
-  THE SPINE      cleared      16.4s       949        54%    3.8 rad/s
+  surf_helix
+  leg             result           time   peak u/s   on-ramp   mouse
+  DROP IN        cleared           50.6s       790       48%   3.8 rad/s
+  SWITCHBACK     cleared           21.6s      1186       56%   3.8 rad/s
+  THE BEND       cleared           17.4s      1096       65%   3.8 rad/s
+  THE GAP        cleared           17.4s      1183       46%   3.8 rad/s
+  THE SPINE      cleared           16.4s       949       54%   3.8 rad/s
 
-  full course: FINISHED in 90.1s, peak 1954 u/s, 50% of it on a ramp
+  surf_aircontrol
+  leg             result           time   peak u/s   on-ramp   mouse
+  START→FINISH   cleared           25.5s      1998       48%   3.8 rad/s
+
+  surf_helix full course: FINISHED in 90.1s, peak 1954 u/s, 50% of it on a ramp
 ```
 
 Every one of those numbers was a failure first. The bot is what found that `high: 'L'` was
 building ramps leaning the wrong way, that stage-entry ramps were poking through the previous
-stage's catch pad, and that a trough entered from a ledge needs its face hung under the ledge
-rather than five hundred units above it.
+stage's catch pad, that a trough entered from a ledge needs its face hung under the ledge rather
+than five hundred units above it, and — on the new map — that solid threading walls were a trap
+the generator could not place fairly.
 
 ```bash
-npm test                      # 22 tests: movement, map, bot
-npm run trace 3               # tick-by-tick trace of the bot flying stage 3
+npm test                      # 29 tests: movement, maps, bot
+npm run trace aircontrol      # tick-by-tick trace of the bot flying the whole one-shot map
+npm run trace helix 3         # or one stage of the other course
 ```
 
-`test/trace.mjs` is the tool the course was tuned with — it prints speed, height, which face the
-bot is on and how far up it, every N ticks.
+`test/trace.mjs` is the tool both courses were tuned with — it prints speed, height, which face
+the bot is on and how far up it, every N ticks. The map tests also assert things the eye misses:
+that no kill volume swallows the ride line it is supposed to be protecting, that the prespeed zone
+actually covers the spawn and reaches the gate, and that the start platform really is next to the
+first ramp.
 
 ## On screen
+
+There are no speed lines and the field of view does not widen with speed. Both read as speed you
+did not earn, and a FOV that moves the ramp edge under your crosshair while you are trying to hold
+a line is worse than useless. What is left is instrumentation:
 
 - **Speedometer** — the scoreboard. The tick on the bar is 250 u/s; everything past it you
   strafed for.
@@ -202,25 +293,31 @@ Auto-hop answers *when*, never *where*, and it does nothing on a ramp.
 ## Layout
 
 ```
-index.html        HUD markup, panels, importmap
-src/config.js     the movement CVars and the persisted settings
-src/physics.js    collision volumes + PlayerMove. No THREE, no DOM, unit tested headless
-src/world.js      builders: each emits the mesh AND the matching physics volume
-src/map.js        surf_helix, generated from a ride line
-src/player.js     view angles, eye smoothing, the lean, speed FOV
-src/input.js      pointer lock; per-frame mouse split evenly across the frame's ticks
-src/timer.js      run state, splits, records, the personal-best ghost
-src/hud.js        speedometer, ramp gauge, sync, splits, panels
-src/fx.js         rings, the ramp trail, speed lines, the ghost mesh
-src/audio.js      synthesised — no sample files
-src/core.js       renderer, sky, starfield, lighting
-src/main.js       boot, the 128Hz loop, triggers, menus
-test/             movement, map and bot tests + the trace tool
+index.html            HUD markup, panels, map picker, importmap
+src/config.js         the movement CVars, the server RULES, the persisted settings
+src/physics.js        collision volumes + PlayerMove. No THREE, no DOM, unit tested headless
+src/world.js          builders: each emits the mesh AND the matching physics volume
+src/mapkit.js         the ride-line authoring language every course is written in
+src/maps/*.js         the courses themselves
+src/map.js            the registry: which course is currently built
+src/player.js         view angles, eye smoothing, the lean
+src/input.js          pointer lock; per-frame mouse split evenly across the frame's ticks
+src/timer.js          run state, splits, per-map records, the personal-best ghost
+src/hud.js            speedometer, ramp gauge, sync, splits, panels
+src/fx.js             rings, the ramp trail, the ghost mesh
+src/audio.js          synthesised — no sample files
+src/core.js           renderer, sky, starfield, lighting
+src/main.js           boot, the 128Hz loop, triggers, menus, the map picker
+test/                 movement, map and bot tests + the trace tool
 ```
 
-`src/physics.js` deliberately imports nothing but `config.js`. The renderer cannot reach into the
-movement, and the movement can be run without a browser at all — which is what makes the bot
-possible.
+`src/physics.js` deliberately imports nothing but `config.js` — not even the map. That is why the
+server rules live in `config.js` as a `RULES` object a map *applies* rather than as map data the
+rulebook reads: the renderer cannot reach into the movement, and the movement can be run without a
+browser at all, which is what makes the bot possible.
+
+`MAP` is repopulated in place rather than replaced when you switch courses, so every module can
+import it once and keep the binding.
 
 The simulation is a hard 128Hz whatever the display is doing, and each frame's mouse movement is
 split evenly across that frame's ticks. Air acceleration is a per-tick sum and a surf ramp is
@@ -230,9 +327,14 @@ gaining the same speed and not.
 ## Attribution
 
 Original game. The movement reproduces the Source-engine model — friction, ground acceleration,
-the 45.57° standable-surface threshold and the 30 u/s air wish-speed cap — from public
-documentation. All geometry, art and code are original and no Valve assets are used. The module
-layout and renderer skeleton follow [neomorrison/bhop](https://github.com/neomorrison/bhop); the
-ramp solver, the map generator, the bot and the course are this project's own.
+the 45.57° standable-surface threshold, the 30 u/s air wish-speed cap and the 1.2× bunnyhop cap —
+from public documentation. All geometry, art and code are original and no Valve assets are used.
+
+`surf_aircontrol` is named for, and built to the shape of, the air-control genre of surf maps. It
+is not a port of any existing community map and shares no geometry with one.
+
+The module layout and renderer skeleton follow
+[neomorrison/bhop](https://github.com/neomorrison/bhop); the ramp solver, the map generator, the
+bot and both courses are this project's own.
 
 MIT.

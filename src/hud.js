@@ -6,7 +6,7 @@
    loop. The ramp gauge next to it is the other half: on a face you cannot
    see the horizon, so it shows how much slope is still underneath you and
    how fast that is running out.                                          */
-import { MOVE, SETTINGS } from './config.js';
+import { MOVE, RULES, SETTINGS } from './config.js';
 import { MAP } from './map.js';
 import { rampLocal } from './physics.js';
 import { RUN, RECORDS, GHOST, formatTime, formatDelta, stageSplit } from './timer.js';
@@ -122,7 +122,9 @@ export function updateHUD(view, dt) {
   el.timer.textContent = formatTime(RUN.time);
   el.timer.style.color = RUN.state === "running" ? "#fff" : RUN.state === "finished" ? "#ffc23f" : "#7d8aa6";
   const st = MAP.stages[RUN.stage];
-  el.stage.textContent = st ? `${RUN.stage > 0 ? RUN.stage + " / " + (MAP.stages.length - 2) + "  ·  " : ""}${st.name}` : "";
+  const nStages = MAP.stages.length - 2;                 // START and FINISH are not stages
+  const counter = RUN.stage > 0 && nStages > 1 ? RUN.stage + " / " + nStages + "  ·  " : "";
+  el.stage.textContent = st ? counter + st.name : "";
 
   const pace = liveDelta();
   if (pace == null) { el.pace.textContent = RECORDS.best == null ? "no PB yet" : ""; el.pace.style.color = "#7d8aa6"; }
@@ -150,7 +152,10 @@ export function updateHUD(view, dt) {
     el.syncVal.textContent = s + "%";
   }
 
-  el.stats.textContent = `${RUN.falls} falls · ${(RUN.surfTime).toFixed(0)}s on the face`;
+  const onFace = `${RUN.surfTime.toFixed(0)}s on the face`;
+  el.stats.textContent = RULES.oneShot
+    ? `one shot · no bhop gain · ${onFace}`
+    : `${RUN.falls} falls · ${onFace}`;
 }
 
 function liveDelta() {
@@ -190,29 +195,50 @@ export function refreshPB() {
   fillRecordsPanel();
   el.pb.textContent = RECORDS.best == null ? "--:--.--" : formatTime(RECORDS.best);
   el.splits.innerHTML = "";
-  MAP.checkpoints.forEach((cp, i) => {
-    const row = document.createElement("div");
-    row.className = "srow";
-    const best = RECORDS.stageBest[i];
-    row.innerHTML = `<span class="sn">${i + 1} ${cp.name}</span><span class="sv">${best == null ? "--" : best.toFixed(2)}</span>`;
-    el.splits.appendChild(row);
-  });
+  const row = (label, value) => {
+    const d = document.createElement("div");
+    d.className = "srow";
+    d.innerHTML = `<span class="sn"></span><span class="sv"></span>`;
+    d.firstChild.textContent = label;
+    d.lastChild.textContent = value;
+    el.splits.appendChild(d);
+  };
+  if (MAP.checkpoints.length) {
+    MAP.checkpoints.forEach((cp, i) => {
+      const best = RECORDS.stageBest[i];
+      row(`${i + 1} ${cp.name}`, best == null ? "--" : best.toFixed(2));
+    });
+  } else {
+    // A one-shot map has no splits to show, so the panel shows the things it
+    // does have: how many finishes, and how fast you have ever been on it.
+    row("finishes", String(RECORDS.runs || 0));
+    row("fastest ever", RECORDS.topSpeed ? Math.round(RECORDS.topSpeed) + " u/s" : "--");
+  }
 }
 
 function fillRecordsPanel() {
   const body = document.querySelector("#recordsBody");
   if (!body) return;
-  const rows = MAP.checkpoints.map((cp, i) => {
-    const best = RECORDS.stageBest[i];
-    const at = RECORDS.splits[i];
-    return `<tr><td>${i + 1}</td><td>${cp.name}</td><td class="num">${best == null ? "--" : best.toFixed(2)}</td><td class="num">${at == null ? "--" : formatTime(at)}</td></tr>`;
-  }).join("");
+  const title = document.querySelector("#recordsTitle");
+  if (title) title.textContent = MAP.name + " — records";
+
+  const table = MAP.checkpoints.length ? `
+    <table class="rtable"><thead><tr><th></th><th>stage</th><th class="num">best split</th><th class="num">pb at</th></tr></thead>
+    <tbody>${MAP.checkpoints.map((cp, i) => {
+      const best = RECORDS.stageBest[i], at = RECORDS.splits[i];
+      return `<tr><td>${i + 1}</td><td>${cp.name}</td><td class="num">${best == null ? "--" : best.toFixed(2)}</td><td class="num">${at == null ? "--" : formatTime(at)}</td></tr>`;
+    }).join("")}</tbody></table>` : `
+    <div class="muted" style="margin-top:10px;line-height:1.7">
+      One shot, no checkpoints — there are no splits to keep.<br>
+      Bunnyhopping is capped at ${Math.round(MOVE.maxSpeed * MOVE.bunnyhopFactor)} u/s and the start zone at 350,
+      so every unit above that in a finishing time came off a ramp face.
+    </div>`;
+
   body.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
       <span style="letter-spacing:2px;font-size:11px">PERSONAL BEST</span>
       <span style="font-size:26px;font-weight:bold;color:#ffc23f;font-family:Consolas,monospace">${formatTime(RECORDS.best)}</span>
-    </div>
-    <table class="rtable"><thead><tr><th></th><th>stage</th><th class="num">best split</th><th class="num">pb at</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>${table}
     <div style="margin-top:12px;font-size:12px;color:#6d7ba0">
       ${RECORDS.runs || 0} finished run${(RECORDS.runs || 0) === 1 ? "" : "s"}
       &nbsp;·&nbsp; fastest ever ${Math.round(RECORDS.topSpeed || 0)} u/s
@@ -229,21 +255,25 @@ export function panelOpen() { return !!document.querySelector(".panel.show"); }
 
 export function showResults(f) {
   const body = $("#resultsBody");
-  const rows = MAP.checkpoints.map((cp, i) => {
+  const rows = MAP.checkpoints.length ? MAP.checkpoints.map((cp, i) => {
     const sp = stageSplit(i, f.splits);
     const best = RECORDS.stageBest[i];
     const isBest = sp != null && best != null && Math.abs(sp - best) < 1e-9;
     return `<tr><td>${i + 1}</td><td>${cp.name}</td><td class="num">${sp == null ? "--" : sp.toFixed(2)}</td>
             <td class="num">${f.splits[i] == null ? "--" : formatTime(f.splits[i])}</td>
             <td class="num ${isBest ? "good" : ""}">${isBest ? "BEST" : ""}</td></tr>`;
-  }).join("");
+  }).join("") : "";
   $("#resultsTitle").textContent = f.pb ? "NEW PERSONAL BEST" : "RUN COMPLETE";
   $("#resultsTitle").style.color = f.pb ? "#9dff64" : "#ffc23f";
   $("#resultsTime").textContent = formatTime(f.time);
   $("#resultsDelta").textContent = f.delta == null ? "first finish" : formatDelta(f.delta) + " vs previous best";
   $("#resultsDelta").style.color = f.delta == null ? "#7d8aa6" : f.delta <= 0 ? "#9dff64" : "#ff5d8f";
-  body.innerHTML = `<table class="rtable"><thead><tr><th></th><th>stage</th><th class="num">split</th><th class="num">at</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-    <div class="rmeta">top speed <b>${Math.round(f.topSpeed)}</b> u/s &nbsp;·&nbsp; <b>${(f.surfTime / f.time * 100).toFixed(0)}%</b> of it on a ramp &nbsp;·&nbsp; <b>${f.falls}</b> falls</div>`;
+  const table = rows
+    ? `<table class="rtable"><thead><tr><th></th><th>stage</th><th class="num">split</th><th class="num">at</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+    : `<div class="muted" style="margin-top:14px">${MAP.name} · one shot, start to finish</div>`;
+  const falls = MAP.checkpoints.length ? ` &nbsp;·&nbsp; <b>${f.falls}</b> falls` : "";
+  body.innerHTML = `${table}
+    <div class="rmeta">top speed <b>${Math.round(f.topSpeed)}</b> u/s &nbsp;·&nbsp; <b>${(f.surfTime / f.time * 100).toFixed(0)}%</b> of it on a ramp${falls}</div>`;
   showPanel("resultsPanel");
 }
 

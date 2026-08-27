@@ -7,14 +7,14 @@
    seconds of it, so this is the difference between a 60Hz machine and a
    240Hz one gaining the same speed and not.                               */
 import { scene, camera, renderer, setFov } from './core.js';
-import { MOVE, SETTINGS, loadSettings, saveSettings } from './config.js';
+import { MOVE, RULES, SETTINGS, loadSettings, saveSettings } from './config.js';
 import { playerMove, triggersAt } from './physics.js';
-import { buildMap, MAP } from './map.js';
+import { buildMap, MAP, MAPS, DEFAULT_MAP } from './map.js';
 import { worldStats } from './world.js';
 import { view, spawnAt, resetPlayer, beginTick, updateCamera } from './player.js';
 import { initInput, buildCommand, consumeLook, clearLook, endFrame, keyState, setSuspended, mouse } from './input.js';
 import {
-  RUN, RECORDS, GHOST, loadRecords, clearRecords, resetRun, tickRun, ghostAt,
+  RUN, RECORDS, GHOST, loadRecords, clearRecords, resetRun, tickRun, ghostAt, readBest,
   onStartGate, onCheckpoint, onFinish, onFall, formatTime, formatDelta,
 } from './timer.js';
 import {
@@ -23,7 +23,7 @@ import {
 } from './hud.js';
 import {
   fxLand, fxJump, fxCheckpoint, fxFinish, fxFall, updateFx,
-  initSpeedLines, updateSpeedLines, initTrail, dropTrail, initGhost, setGhost,
+  initTrail, dropTrail, initGhost, setGhost,
 } from './fx.js';
 import { unlockAudio, updateAudio, sfxJump, sfxLand, sfxCheckpoint, sfxFinish, sfxPB, sfxFall, sfxPad, sfxUi, sfxRamp } from './audio.js';
 
@@ -138,18 +138,35 @@ function postTick() {
 
   handleTriggers();
 
-  if (b.pos.y < killY()) {
-    const p = onFall();
-    fxFall(b.pos.x, b.pos.y, b.pos.z);
-    sfxFall();
-    spawnAt(p);
-    inside.clear();
-    centerMessage("FELL", RUN.state === "running"
-      ? "back to the checkpoint — the clock is still running"
-      : "back to the checkpoint", 1.8, "#ff5d8f");
+  /* The prespeed zone. A surf server clamps you inside the start area so no run
+     can begin with speed carried in from outside it. */
+  for (const t of hits) {
+    if (t.kind !== "prespeed") continue;
+    const sp = Math.hypot(b.vel.x, b.vel.z);
+    if (sp > t.cap) { const k = t.cap / sp; b.vel.x *= k; b.vel.z *= k; b.speed = t.cap; }
   }
 
+  // A kill volume under the ride line, or the stage floor as a backstop.
+  if (b.pos.y < killY() || hits.some(t => t.kind === "kill")) fell();
+
   tickRun(TICK, b);
+}
+
+/** Off the course. On a one-shot map that is the whole run. */
+function fell() {
+  const b = view.body;
+  fxFall(b.pos.x, b.pos.y, b.pos.z);
+  sfxFall();
+  if (RULES.oneShot && RUN.state === "running") {
+    restartRun(true);
+    centerMessage("RUN OVER", "one shot, no checkpoints — back to the start", 2.8, "#ff5d8f");
+    return;
+  }
+  spawnAt(onFall());
+  inside.clear();
+  centerMessage("FELL", RUN.state === "running"
+    ? "back to the checkpoint — the clock is still running"
+    : "back to the checkpoint", 1.8, "#ff5d8f");
 }
 
 /* ============================== loop ============================== */
@@ -197,7 +214,6 @@ function frame(now) {
   updateCamera(booted ? acc / TICK : 0, dt);
   if (booted && !paused && !frozen && b.surfRamp) dropTrail(b.pos.x, b.pos.y, b.pos.z, dt);
   updateFx(dt);
-  updateSpeedLines(b.speed, dt, SETTINGS.speedLines);
 
   if (booted) {
     updateHUD(view, dt);
@@ -232,7 +248,7 @@ function restartRun(full = true) {
   centerMessage(full ? "RESTART" : "CHECKPOINT", "", 1.0, "#35e0c8");
 }
 
-/** Practice: drop in at a checkpoint with the clock stopped. */
+/** Practice: drop in at a checkpoint with the clock stopped. Checkpointed maps only. */
 function gotoStage(i) {
   frozen = false;
   resetRun();
@@ -262,7 +278,7 @@ function onKey(code) {
   if (!booted || paused) return false;
   switch (code) {
     case "KeyR": restartRun(true); return true;
-    case "KeyQ": RUN.falls++; restartRun(false); return true;
+    case "KeyQ": if (RULES.oneShot) { restartRun(true); } else { RUN.falls++; restartRun(false); } return true;
     case "Tab": $("#recordsPanel").classList.toggle("show"); return true;
     case "F1": SETTINGS.autoHop = !SETTINGS.autoHop; saveSettings(); syncSettingsUI();
       centerMessage("AUTO-HOP " + (SETTINGS.autoHop ? "ON" : "OFF"),
@@ -283,7 +299,6 @@ function syncSettingsUI() {
   set("#optKeys", "checked", SETTINGS.showKeys);
   set("#optSync", "checked", SETTINGS.showSync);
   set("#optRoll", "checked", SETTINGS.viewRoll);
-  set("#optLines", "checked", SETTINGS.speedLines);
   set("#optSound", "checked", SETTINGS.sound);
 }
 
@@ -297,7 +312,6 @@ function wireSettings() {
   toggle("#optKeys", "showKeys");
   toggle("#optSync", "showSync");
   toggle("#optRoll", "viewRoll");
-  toggle("#optLines", "speedLines");
   toggle("#optSound", "sound");
   on("#btnResume", "click", () => pause(false));
   on("#btnRestart", "click", () => { pause(false); restartRun(true); });
@@ -309,33 +323,106 @@ function wireSettings() {
   on("#btnCloseResults", "click", again);
 }
 
+/* ============================== maps ============================== */
+
+const LS_MAP = "surf.map.v1";
+let mapId = DEFAULT_MAP;
+
+function loadMapChoice() {
+  try { return localStorage.getItem(LS_MAP) || DEFAULT_MAP; } catch (e) { return DEFAULT_MAP; }
+}
+
+/**
+ * Build a course and hand the rest of the game its records. MAP is repopulated
+ * in place, so nothing else needs to be told the map changed — but the HUD's
+ * split rows and the practice list are per-course and do get rebuilt.
+ */
+function selectMap(id) {
+  mapId = MAPS.some(m => m.id === id) ? id : DEFAULT_MAP;
+  try { localStorage.setItem(LS_MAP, mapId); } catch (e) {}
+  buildMap(mapId);
+  loadRecords();
+  resetRun();
+  resetPlayer();
+  inside.clear(); reached = 0; frozen = false;
+  buildHUD();
+  buildStageButtons(gotoStage);
+  refreshPB();
+  renderMapPicker();
+  $("#practiceBox").style.display = MAP.checkpoints.length ? "" : "none";
+}
+
+/** The picker on the start panel: name, what it asks of you, and your best. */
+function renderMapPicker() {
+  const box = $("#mapPicker");
+  if (!box) return;
+  box.innerHTML = "";
+  for (const m of MAPS) {
+    const best = m.id === mapId ? RECORDS.best : readBest(m.id);
+    const card = document.createElement("button");
+    card.className = "mapcard btn" + (m.id === mapId ? " on" : "");
+    card.type = "button";
+    const name = document.createElement("b"); name.textContent = m.name;
+    const blurb = document.createElement("span"); blurb.textContent = m.blurb;
+    const pb = document.createElement("i");
+    pb.textContent = best == null ? "no personal best" : "best " + formatTime(best);
+    card.append(name, blurb, pb);
+    card.addEventListener("click", () => { sfxUi(); selectMap(m.id); });
+    box.appendChild(card);
+  }
+  const pb = $("#startPB");
+  if (pb) pb.textContent = RECORDS.best == null
+    ? "no personal best on this map yet"
+    : "personal best  " + formatTime(RECORDS.best);
+
+  const title = $("#startMapName");
+  if (title) title.textContent = MAP.name.replace(/^surf/, "");
+  document.title = MAP.name + " — CS surf in the browser";
+
+  /* What this course actually asks of you, in the terms a surf server would
+     put it. These are the differences between the two maps that matter. */
+  const rules = $("#mapRules");
+  if (rules) {
+    rules.innerHTML = "";
+    const chip = (text, hard) => {
+      const e = document.createElement("span");
+      if (hard) e.className = "hard";
+      e.textContent = text;
+      rules.appendChild(e);
+    };
+    chip(RULES.oneShot ? "one shot — a fall ends the run" : `${MAP.checkpoints.length} checkpoints — a fall costs the clock`, RULES.oneShot);
+    chip(RULES.bunnyhopping
+      ? "bunnyhopping on"
+      : `no bhop gain — jumps capped at ${Math.round(MOVE.maxSpeed * MOVE.bunnyhopFactor)} u/s`, !RULES.bunnyhopping);
+    if (MAP.prespeed) chip(`start speed capped at ${MAP.prespeed} u/s`, true);
+  }
+}
+
 /* ============================== boot ============================== */
 
 function start() {
-  if (!booted) {
-    buildMap();
-    buildHUD();
-    buildStageButtons(gotoStage);
-    initSpeedLines(); initTrail(); initGhost();
-    booted = true;
-    $("#hud").style.display = "";
-  }
   hidePanel("startPanel");
   frozen = false;
   resetRun();
   resetPlayer();
   inside.clear(); reached = 0;
   acc = 0; last = performance.now();
+  booted = true;
+  $("#hud").style.display = "";
   setSuspended(false);
   unlockAudio();
   grabMouse();
-  centerMessage("SURF_HELIX", "run through the green gate to start the clock", 3.2, "#9dff64");
+  const bhop = RULES.bunnyhopping ? "" : "  ·  no bhop gain";
+  centerMessage(MAP.name.toUpperCase(),
+    "run through the green gate to start the clock" + bhop, 3.2, "#9dff64");
 }
 
 function boot() {
-  loadSettings(); loadRecords();
+  loadSettings();
   setFov(SETTINGS.fov);
   wireSettings(); syncSettingsUI();
+  initTrail(); initGhost();
+  selectMap(loadMapChoice());
 
   initInput(renderer.domElement, {
     onKey,
@@ -352,8 +439,13 @@ function boot() {
   $("#playBtn").addEventListener("click", start);
   $("#playBtn").disabled = false;
   $("#playBtn").textContent = "PLAY";
-  const pb = $("#startPB");
-  if (pb) pb.textContent = RECORDS.best == null ? "no personal best yet" : "personal best  " + formatTime(RECORDS.best);
+  $("#btnChangeMap").addEventListener("click", () => {
+    pause(false); booted = false; frozen = true;
+    resetRun(); resetPlayer();
+    $("#hud").style.display = "none";
+    renderMapPicker();
+    showPanel("startPanel");
+  });
   $("#hud").style.display = "none";
 }
 
