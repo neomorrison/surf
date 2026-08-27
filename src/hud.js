@@ -153,7 +153,7 @@ export function updateHUD(view, dt) {
   }
 
   const onFace = `${RUN.surfTime.toFixed(0)}s on the face`;
-  el.stats.textContent = RULES.oneShot
+  el.stats.textContent = MAP.oneShot
     ? `one shot · no bhop gain · ${onFace}`
     : `${RUN.falls} falls · ${onFace}`;
 }

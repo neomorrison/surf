@@ -16,7 +16,6 @@ export const view = {
   yaw: 0, pitch: 0,
   prev: { x: 0, y: 0, z: 0 },       // position at the previous tick, for render interpolation
   eye: MOVE.eyeStand,
-  roll: 0,
   fov: SETTINGS.fov,
   keys: {}, sync: 0, gainPerSec: 0, turnRate: 0,
   sideInput: 0,
@@ -30,7 +29,7 @@ export function spawnAt(p) {
   b.speed = 0; b.gain = 0; b.surfRamp = null;
   view.prev = { ...b.pos };
   if (p.yaw != null) view.yaw = p.yaw;
-  view.pitch = 0; view.roll = 0;
+  view.pitch = 0;
   view.eye = MOVE.eyeStand;
   view.sync = 0; view.gainPerSec = 0;
 }
@@ -56,21 +55,6 @@ export function updateCamera(alpha, dt) {
   const targetEye = b.ducking ? MOVE.eyeDuck : MOVE.eyeStand;
   view.eye += (targetEye - view.eye) * Math.min(1, dt * 16);
 
-  /* Lean. Two sources: the strafe key you are holding, and the tilt of the
-     ramp under you. The second is the useful one — on a face you cannot see
-     the horizon, and the roll is what tells you which way "up the slope" is. */
-  let targetRoll = 0;
-  if (SETTINGS.viewRoll) {
-    targetRoll = -view.sideInput * (b.onGround ? 0.020 : 0.040);
-    const r = b.surfRamp;
-    if (r) {
-      // sign of the ramp's tilt as seen from where you are looking
-      const lean = r.n.x * Math.cos(view.yaw) - r.n.z * Math.sin(view.yaw);
-      targetRoll += Math.max(-0.16, Math.min(0.16, lean * 0.28));
-    }
-  }
-  view.roll += (targetRoll - view.roll) * Math.min(1, dt * 8);
-
   // The field of view is whatever the player set it to and nothing else. A FOV
   // that widens with speed reads as speed you did not earn, and it moves the
   // ramp edge under your crosshair while you are trying to hold a line.
@@ -80,6 +64,9 @@ export function updateCamera(alpha, dt) {
   }
 
   camera.position.set(x, y + view.eye, z);
-  camera.rotation.set(view.pitch, view.yaw, view.roll, 'YXZ');
+  // No roll. The camera is level, always: a horizon that tips when you press a
+  // key is one more thing moving in a frame where the only thing that should be
+  // moving is the ramp.
+  camera.rotation.set(view.pitch, view.yaw, 0, 'YXZ');
   followSun(x, y, z);
 }

@@ -22,7 +22,7 @@
    Together those mean every unit above 300 u/s in a finishing time came off a
    ramp face, which is the entire claim a surf time makes.                    */
 import {
-  MAP, DIR, facing, cur, beginMap, endMap, killUnderRoute,
+  MAP, DIR, facing, cur, beginMap, endMap, killUnderRoute, prespeedZone,
   gap, ramp, pad, stage, mark,
 } from '../mapkit.js';
 import { block, wall, zone, gate, sign, decal, voidGrid, pointGlow, monolith, MATS, NEON } from '../world.js';
@@ -33,14 +33,11 @@ export const meta = {
   blurb: "One shot, six ramps, no checkpoints. Timer-server rules: no bhop gain, 350 prespeed.",
 };
 
-const PRESPEED = 350;
-
 export function build() {
   beginMap({
     ...meta,
     spawn: { x: -760, y: 0, z: 0, yaw: -Math.PI / 2 },   // view yaw -90deg looks down +X
-    rules: { bunnyhopping: false, oneShot: true },
-    prespeed: PRESPEED,
+    oneShot: true,
   });
 
   voidGrid(-11000, 46000, 90, 0x2d6f8a, 0x1a3550);
@@ -54,11 +51,6 @@ export function build() {
   wall(-900, 0, 40, 900, 0, 420);
   wall(-450, -450, 900, 40, 0, 420);
   wall(-450, 450, 900, 40, 0, 420);
-
-  /* The prespeed zone. Real timer servers clamp you inside the start area so a
-     run cannot begin with speed carried in from outside it; here there is
-     nowhere to carry speed in from, but the rule is the rule. */
-  zone(-450, 0, 900, 900, -80, 700, { kind: "prespeed", cap: PRESPEED });
 
   sign(-160, 560, 0, "SURF_AIRCONTROL", { color: NEON.cyan, rotY: facing(DIR.xPlus), w: 540 });
   sign(-160, 370, 0, "ONE SHOT   ·   NO CHECKPOINTS", {
@@ -118,6 +110,10 @@ export function build() {
     decal(p.x, p.z, p.w * 0.9, p.d * 0.9, p.y, NEON.amber, 0.08);
     MAP.finishPad = { x: p.x, y: p.y, z: p.z };
   }
+
+  /* Built from the geometry, after the ramps exist, so it reaches the first
+     face instead of stopping at the edge of the platform. */
+  prespeedZone();
 
   const b = endMap().bounds;
 

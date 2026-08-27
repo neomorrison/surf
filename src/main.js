@@ -157,7 +157,7 @@ function fell() {
   const b = view.body;
   fxFall(b.pos.x, b.pos.y, b.pos.z);
   sfxFall();
-  if (RULES.oneShot && RUN.state === "running") {
+  if (MAP.oneShot && RUN.state === "running") {
     restartRun(true);
     centerMessage("RUN OVER", "one shot, no checkpoints — back to the start", 2.8, "#ff5d8f");
     return;
@@ -278,7 +278,7 @@ function onKey(code) {
   if (!booted || paused) return false;
   switch (code) {
     case "KeyR": restartRun(true); return true;
-    case "KeyQ": if (RULES.oneShot) { restartRun(true); } else { RUN.falls++; restartRun(false); } return true;
+    case "KeyQ": if (MAP.oneShot) { restartRun(true); } else { RUN.falls++; restartRun(false); } return true;
     case "Tab": $("#recordsPanel").classList.toggle("show"); return true;
     case "F1": SETTINGS.autoHop = !SETTINGS.autoHop; saveSettings(); syncSettingsUI();
       centerMessage("AUTO-HOP " + (SETTINGS.autoHop ? "ON" : "OFF"),
@@ -298,7 +298,6 @@ function syncSettingsUI() {
   set("#optGhost", "checked", SETTINGS.showGhost);
   set("#optKeys", "checked", SETTINGS.showKeys);
   set("#optSync", "checked", SETTINGS.showSync);
-  set("#optRoll", "checked", SETTINGS.viewRoll);
   set("#optSound", "checked", SETTINGS.sound);
 }
 
@@ -311,7 +310,6 @@ function wireSettings() {
   toggle("#optGhost", "showGhost");
   toggle("#optKeys", "showKeys");
   toggle("#optSync", "showSync");
-  toggle("#optRoll", "viewRoll");
   toggle("#optSound", "sound");
   on("#btnResume", "click", () => pause(false));
   on("#btnRestart", "click", () => { pause(false); restartRun(true); });
@@ -390,7 +388,7 @@ function renderMapPicker() {
       e.textContent = text;
       rules.appendChild(e);
     };
-    chip(RULES.oneShot ? "one shot — a fall ends the run" : `${MAP.checkpoints.length} checkpoints — a fall costs the clock`, RULES.oneShot);
+    chip(MAP.oneShot ? "one shot — a fall ends the run" : `${MAP.checkpoints.length} checkpoints — a fall costs the clock`, MAP.oneShot);
     chip(RULES.bunnyhopping
       ? "bunnyhopping on"
       : `no bhop gain — jumps capped at ${Math.round(MOVE.maxSpeed * MOVE.bunnyhopFactor)} u/s`, !RULES.bunnyhopping);

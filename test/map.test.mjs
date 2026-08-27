@@ -49,23 +49,42 @@ test('nothing on the ride line sits under its own kill height', () => {
   }
 });
 
-test('surf_aircontrol runs the timer-server rules', () => {
+test('every course plays by the same movement rules', () => {
+  assert.equal(RULES.bunnyhopping, false, 'sv_enablebunnyhopping 0 everywhere');
+  assert.equal(RULES.prespeedCap, 350);
+  for (const id of IDS) {
+    buildMap(id);
+    assert.equal(MAP.prespeed, RULES.prespeedCap, id + ': prespeed is not the global cap');
+  }
+});
+
+test("every course's prespeed zone reaches its first ramp — it cannot leak", () => {
+  for (const id of IDS) {
+    buildMap(id);
+    const pre = TRIGGERS.filter(t => t.kind === 'prespeed');
+    assert.equal(pre.length, 1, id + ': exactly one prespeed zone');
+    const z = pre[0];
+    assert.equal(z.cap, RULES.prespeedCap);
+
+    const inside = (x, y, zz) => x > z.minX && x < z.maxX && zz > z.minZ && zz < z.maxZ
+      && y >= z.minY && y < z.maxY;
+    assert.ok(inside(MAP.spawn.x, MAP.spawn.y, MAP.spawn.z), id + ': the spawn is not in the zone');
+
+    // A cap that stops short of the first face is worth nothing — the gap
+    // between is free air, and a perfect strafe turns it back into speed.
+    const first = MAP.route[0];
+    assert.ok(inside(first.x, first.y, first.z),
+      `${id}: the zone stops before the first ride point at ${first.x.toFixed(0)},${first.y.toFixed(0)}`);
+
+    const gate = TRIGGERS.find(t => t.kind === 'start');
+    assert.ok(z.minX <= gate.minX && z.maxX >= gate.maxX, id + ': the zone does not span the start gate');
+  }
+});
+
+test('surf_aircontrol is one shot, with kill volumes instead of checkpoints', () => {
   buildMap('aircontrol');
-  assert.equal(RULES.bunnyhopping, false, 'a hop must not be able to add speed');
-  assert.equal(RULES.oneShot, true, 'no checkpoints means a fall ends the run');
+  assert.equal(MAP.oneShot, true);
   assert.equal(MAP.checkpoints.length, 0);
-
-  const pre = TRIGGERS.filter(t => t.kind === 'prespeed');
-  assert.equal(pre.length, 1, 'exactly one prespeed zone');
-  assert.equal(pre[0].cap, 350);
-
-  // the zone has to cover the spawn and reach past the gate, or it is decorative
-  const gateX = TRIGGERS.find(t => t.kind === 'start').maxX;
-  const z = pre[0];
-  assert.ok(MAP.spawn.x > z.minX && MAP.spawn.x < z.maxX, 'spawn is inside the prespeed zone');
-  assert.ok(z.maxX >= gateX, 'the prespeed zone reaches the start gate');
-  assert.ok(MAP.spawn.y >= z.minY && MAP.spawn.y < z.maxY, 'and covers standing height');
-
   assert.ok(TRIGGERS.some(t => t.kind === 'kill'), 'a one-shot map needs kill volumes');
 });
 
@@ -79,11 +98,10 @@ test('surf_aircontrol starts you right next to the first ramp', () => {
   assert.ok(below > 0 && below < 400, `and ${below.toFixed(0)} units below the lip`);
 });
 
-test('surf_helix keeps its checkpoints and its bunnyhopping', () => {
+test('surf_helix keeps its checkpoints', () => {
   buildMap('helix');
   assert.equal(MAP.checkpoints.length, 4);
-  assert.equal(RULES.bunnyhopping, true);
-  assert.equal(RULES.oneShot, false);
+  assert.equal(MAP.oneShot, false);
 });
 
 test('report: the courses', () => {

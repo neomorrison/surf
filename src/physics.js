@@ -400,15 +400,20 @@ export function playerMove(body, cmd, dt) {
 
   /* --- 2. jump (before friction: that is why a frame-perfect hop keeps speed) --- */
   if (cmd.jump && body.onGround) {
-    /* Source's anti-bunnyhop, and the reason surf times are about ramps and
-       nothing else: with sv_enablebunnyhopping off, the tick you jump your
-       horizontal velocity is scaled back to 1.2 x maxSpeed. You can still hop
-       to move, but a hop can never hand you speed — every unit above 300 has
-       to come off a ramp face. */
+    /* PreventBunnyJumping. With sv_enablebunnyhopping off, Source scales your
+       velocity back to BUNNYJUMP_MAX_SPEED_FACTOR (1.2) x m_flMaxspeed on the
+       tick you jump — 300 u/s with a knife. Note it uses the *3D* speed and
+       scales all three components, and that it runs before the jump impulse is
+       added, so the vertical kick you are about to get is not scaled with it.
+       On flat ground vy is already ~0, so this reads as a horizontal clamp.
+
+       It is also why this can never touch a surf ramp: it needs onGround, and
+       a ramp is never ground. Every unit above 300 in a finishing time came
+       off a face. */
     if (!RULES.bunnyhopping) {
       const cap = M.maxSpeed * M.bunnyhopFactor;
-      const spd = Math.hypot(vel.x, vel.z);
-      if (spd > cap) { const k = cap / spd; vel.x *= k; vel.z *= k; }
+      const spd = Math.hypot(vel.x, vel.y, vel.z);
+      if (spd > cap) { const k = cap / spd; vel.x *= k; vel.y *= k; vel.z *= k; }
     }
     vel.y = M.jumpVel;
     body.onGround = false; body.groundRamp = null; body.jumped = true;

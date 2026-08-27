@@ -16,7 +16,8 @@ import {
   block, wall, surfRamp, zone, gate, sign, decal,
   voidGrid, pointGlow, monolith, clearWorld, MATS, NEON,
 } from './world.js';
-import { MOVE, slopeOf, applyRules } from './config.js';
+import { trigger } from './physics.js';
+import { MOVE, RULES, slopeOf } from './config.js';
 
 /**
  * The one live map. `buildMap()` repopulates this object in place rather than
@@ -24,11 +25,11 @@ import { MOVE, slopeOf, applyRules } from './config.js';
  */
 export const MAP = {
   id: "", name: "", blurb: "", prespeed: null,
+  oneShot: false,                                       // course format, not a movement rule
   spawn: { x: 0, y: 0, z: 0, yaw: 0 },
   checkpoints: [], stages: [], finishPad: null,
   route: [],                                            // ride-line waypoints, for the tests
   bounds: null,
-  rules: null,
 };
 
 /* travel direction for a ramp yaw t is (sin t, cos t) */
@@ -54,11 +55,11 @@ export const uvec = yaw => ({ x: Math.cos(yaw), z: -Math.sin(yaw) });    // to t
 export function beginMap(o) {
   clearWorld();
   MAP.id = o.id; MAP.name = o.name; MAP.blurb = o.blurb || "";
-  MAP.prespeed = o.prespeed || null;
   MAP.spawn = { ...o.spawn };
   MAP.checkpoints.length = 0; MAP.stages.length = 0; MAP.route.length = 0;
   MAP.finishPad = null; MAP.bounds = null;
-  MAP.rules = applyRules(o.rules);
+  MAP.oneShot = !!o.oneShot;
+  MAP.prespeed = RULES.prespeedCap;
   cur.x = 0; cur.y = 0; cur.z = 0; cur.yaw = 0;
   stageIdx = 0; stageFloor = 0; stageColor = NEON.teal;
 }
@@ -86,6 +87,34 @@ export function killUnderRoute(allowance = 620, halfWidth = 2600) {
       Math.abs(b.x - a.x) + padX * 2, Math.abs(b.z - a.z) + padZ * 2,
       Math.min(a.y, b.y) - allowance - 900, 900, { kind: "kill" });
   }
+}
+
+/**
+ * The start zone, sized so it cannot leak.
+ *
+ * A prespeed cap that stops at the edge of the platform is worth nothing: the
+ * gap between there and the first ramp is free air, and a perfect strafe turns
+ * 170 units of it into another 60 u/s. So this is built from the geometry
+ * rather than typed in — it spans from the spawn to the first thing on the
+ * ride line and a little past it, which means the clamp is still in force at
+ * the moment you touch the face.
+ *
+ * Call it after the first ramp exists.
+ */
+export function prespeedZone(o = {}) {
+  const first = MAP.route[0];
+  if (!first) return null;
+  const past = o.past == null ? 260 : o.past;           // reach beyond the first ride point
+  const wide = o.wide == null ? 900 : o.wide;           // and out to either side of the line
+  const t = tvec(first.yaw);
+  const ex = first.x + t.x * past, ez = first.z + t.z * past;
+
+  const minX = Math.min(MAP.spawn.x, ex) - wide, maxX = Math.max(MAP.spawn.x, ex) + wide;
+  const minZ = Math.min(MAP.spawn.z, ez) - wide, maxZ = Math.max(MAP.spawn.z, ez) + wide;
+  const minY = Math.min(MAP.spawn.y, first.y) - 400;
+  const maxY = Math.max(MAP.spawn.y, first.y) + 900;
+
+  return trigger(minX, maxX, minY, maxY, minZ, maxZ, { kind: "prespeed", cap: RULES.prespeedCap });
 }
 
 /** Close the last stage's kill floor and work out the map's extent. */

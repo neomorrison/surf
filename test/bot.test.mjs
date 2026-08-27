@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import { buildMap, MAP, MAPS } from '../src/map.js';
 import { MOVE, RULES } from '../src/config.js';
-import { triggersAt } from '../src/physics.js';
+import { triggersAt, makeBody, playerMove } from '../src/physics.js';
 import { makeBot, step } from './surfbot.mjs';
 
 const hits = [];
@@ -72,7 +72,7 @@ test('report: the bot plays surf_aircontrol, one shot, no respawns', () => {
   const r = fly(MAP.spawn, 0, MAP.finishPad, 150);
   report('aircontrol', [{ leg: 'START→FINISH', ...r }]);
   if (r.ok) {
-    console.log(`  and it never had a checkpoint to fall back to: prespeed ${350}, ` +
+    console.log(`  and it never had a checkpoint to fall back to: prespeed ${RULES.prespeedCap}, ` +
       `bunnyhopping ${RULES.bunnyhopping ? 'on' : 'off'}\n`);
   }
 });
@@ -91,4 +91,64 @@ test('surf_helix is finishable end to end without a single fall', () => {
   console.log(`\n  surf_helix full course: ${r.ok ? 'FINISHED' : r.why} in ${r.t.toFixed(1)}s, ` +
     `peak ${r.peak.toFixed(0)} u/s, ${(r.bot.surfTicks / r.bot.ticks * 100).toFixed(0)}% of it on a ramp\n`);
   assert.ok(r.ok, 'a bot that never falls should be able to reach the finish');
+});
+
+/**
+ * The prespeed cap, attacked rather than asserted.
+ *
+ * A cap that only covers the platform is worth nothing — the free air between
+ * it and the first ramp is enough for a perfect strafe to put 60 u/s back on.
+ * So this plays the exploit: run up to walking speed, then hold a frame-perfect
+ * hop and a perfectly perpendicular wish all the way to the first face, and
+ * measure what actually arrives.
+ */
+test('no course can be entered above the prespeed cap, however hard you try', () => {
+  const rows = [];
+  for (const m of MAPS) {
+    buildMap(m.id);
+    const first = MAP.route[0];
+    const b = makeBody(MAP.spawn.x, MAP.spawn.y + 2, MAP.spawn.z);
+    b.onGround = true;
+    let yaw = MAP.spawn.yaw, best = 0, arrived = null;
+    const t = { x: Math.sin(first.yaw), z: Math.cos(first.yaw) };
+
+    for (let n = 0; n < 128 * 40; n++) {
+      const sp = Math.hypot(b.vel.x, b.vel.z);
+      let cmd;
+      if (sp < MOVE.maxSpeed - 4 && b.onGround) {
+        cmd = { forward: 1, side: 0, yaw, jump: false };      // you cannot hop out of a standstill
+      } else {
+        const vx = b.vel.x / sp, vz = b.vel.z / sp;
+        let p = { x: -vz, z: vx };
+        if (p.x * t.x + p.z * t.z < 0) p = { x: vz, z: -vx };  // the one that keeps us going forward
+        yaw = Math.atan2(-p.z, p.x);
+        cmd = { forward: 0, side: 1, yaw, jump: true };         // hold the hop, hold the strafe
+      }
+      playerMove(b, cmd, MOVE.tick);
+
+      triggersAt(b.pos, MOVE.radius, b.hullHeight, hits);
+      for (const z of hits) {
+        if (z.kind !== 'prespeed') continue;
+        const s = Math.hypot(b.vel.x, b.vel.z);
+        if (s > z.cap) { const k = z.cap / s; b.vel.x *= k; b.vel.z *= k; }
+      }
+
+      const now = Math.hypot(b.vel.x, b.vel.z);
+      best = Math.max(best, now);
+      if ((b.pos.x - first.x) * t.x + (b.pos.z - first.z) * t.z >= 0) { arrived = now; break; }
+    }
+    rows.push({ map: MAP.name, best, arrived });
+  }
+
+  console.log('\n  course            best anywhere   at the first face');
+  for (const r of rows) {
+    console.log(`  ${r.map.padEnd(18)} ${r.best.toFixed(0).padStart(9)} u/s ${(r.arrived == null ? 'never reached' : r.arrived.toFixed(0) + ' u/s').padStart(18)}`);
+  }
+  console.log('');
+
+  for (const r of rows) {
+    assert.ok(r.arrived != null, `${r.map}: the exploit run never reached the first ramp`);
+    assert.ok(r.arrived <= RULES.prespeedCap + 0.5,
+      `${r.map}: entered the course at ${r.arrived.toFixed(0)} u/s, cap is ${RULES.prespeedCap}`);
+  }
 });

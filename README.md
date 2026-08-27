@@ -6,7 +6,7 @@ no speed multipliers, no assists. Two courses:
 | | |
 |---|---|
 | **surf_aircontrol** | One shot, six ramps, **no checkpoints**. Timer-server rules: no bhop gain, 350 prespeed. The flights between the ramps are the map. |
-| **surf_helix** | Five stages, four checkpoints, bunnyhopping on. Falling costs you the clock, not the run. |
+| **surf_helix** | Five stages, four checkpoints. Falling costs you the clock, not the run. |
 
 **[▶ Play them here](https://neomorrison.github.io/surf/)**
 
@@ -77,35 +77,54 @@ Sliding off the low edge is a fall. Holding a line is the skill.
 
 ## The surf-server rules
 
-`surf_aircontrol` runs the settings an actual surf timer server runs, and they change what a
-finishing time means.
+Every course plays by the same movement rules, the way every map on a given server does. They live
+in `RULES` in [`src/config.js`](src/config.js) — not in map data, because `physics.js` deliberately
+imports nothing but `config.js` and the rulebook must not be able to reach into a map.
 
-**Bunnyhopping off.** With `sv_enablebunnyhopping 0`, Source scales your horizontal velocity back
-to `BUNNYJUMP_MAX_SPEED_FACTOR` (1.2) times max speed on the tick you jump:
+**Bunnyhopping off.** With `sv_enablebunnyhopping 0`, Source's `PreventBunnyJumping()` scales your
+velocity back to `BUNNYJUMP_MAX_SPEED_FACTOR` (1.2) times `m_flMaxspeed` on the tick you jump —
+300 u/s with a knife:
 
 ```js
 if (!RULES.bunnyhopping) {
-  const cap = M.maxSpeed * M.bunnyhopFactor;          // 250 * 1.2 = 300
-  const spd = Math.hypot(vel.x, vel.z);
-  if (spd > cap) { const k = cap / spd; vel.x *= k; vel.z *= k; }
+  const cap = M.maxSpeed * M.bunnyhopFactor;             // 250 * 1.2 = 300
+  const spd = Math.hypot(vel.x, vel.y, vel.z);           // the engine uses the 3D length
+  if (spd > cap) { const k = cap / spd; vel.x *= k; vel.y *= k; vel.z *= k; }
 }
-vel.y = M.jumpVel;
+vel.y = M.jumpVel;                                       // the kick lands after the clamp
 ```
 
-So hopping is a way to move around the start platform and nothing else — 260 u/s stays 260, but
-500, 900 and 1500 all come out at exactly 300. Note where the check sits: it needs `onGround`, and
-a surf ramp is never ground, so it can never touch you mid-ride.
+260 u/s stays 260, but 500, 900 and 1500 all come out at exactly 300. Note where the check sits: it
+needs `onGround`, and a surf ramp is never ground, so it can never touch you mid-ride.
 
-**Prespeed capped at 350.** A zone over the spawn clamps your horizontal speed while you are
-inside it, the way a timer server's start zone does, so no run can begin with speed carried in
-from outside it.
+**Prespeed capped at 350 in the start zone.** This one is *not* an engine cvar — prespeed limits
+are a timer-plugin feature and the number is a server's choice, with 300–350 the usual range on
+surf. It is enforced continuously while you are inside the zone.
 
-**One shot.** No checkpoints. A kill volume hangs under every segment of the ride line, and
-touching one ends the run and resets the clock.
+The subtlety is where the zone stops. A cap that covers only the platform is worth nothing: the
+gap between it and the first ramp is free air, and a perfect strafe turns 170 units of it back into
+60 u/s. The first version of this leaked exactly that way — the cap said 350 and you touched ramp
+one at **411**. So the zone is built from the geometry rather than typed in:
 
-Together those mean every unit above 300 u/s in a `surf_aircontrol` time came off a ramp face.
-`surf_helix` leaves bunnyhopping on — its first stage has a floor that is *meant* to be hopped —
-so the two courses ask for different things on purpose.
+```js
+export function prespeedZone(o = {}) {
+  const first = MAP.route[0];                 // the first point on the ride line
+  ...                                         // spanned from the spawn, and 260 past it
+}
+```
+
+`test/bot.test.mjs` then attacks it rather than trusting it — it runs up to walking speed, holds a
+frame-perfect hop and a perfectly perpendicular wish all the way in, and asserts what arrives:
+
+```
+  course            best anywhere   at the first face
+  surf_aircontrol          350 u/s            350 u/s
+  surf_helix               350 u/s            326 u/s
+```
+
+**Ground and air acceleration** are the values surf servers actually run: `sv_accelerate 10` and
+`sv_airaccelerate 150`. Anything above about 16 of air acceleration saturates against the 30 u/s
+wish cap on every tick, so the exact number changes nothing — the cap is the game.
 
 ## The collision, exactly
 
@@ -257,9 +276,10 @@ first ramp.
 
 ## On screen
 
-There are no speed lines and the field of view does not widen with speed. Both read as speed you
-did not earn, and a FOV that moves the ramp edge under your crosshair while you are trying to hold
-a line is worse than useless. What is left is instrumentation:
+There are no speed lines, no camera lean, and the field of view does not widen with speed. All
+three are things moving in the frame that are not the ramp: a FOV that opens with speed shifts the
+ramp edge under your crosshair mid-line, and a horizon that tips when you press a key is one more
+thing to read past. What is left is instrumentation:
 
 - **Speedometer** — the scoreboard. The tick on the bar is 250 u/s; everything past it you
   strafed for.
@@ -300,7 +320,7 @@ src/world.js          builders: each emits the mesh AND the matching physics vol
 src/mapkit.js         the ride-line authoring language every course is written in
 src/maps/*.js         the courses themselves
 src/map.js            the registry: which course is currently built
-src/player.js         view angles, eye smoothing, the lean
+src/player.js         view angles, eye smoothing (no roll: the horizon stays level)
 src/input.js          pointer lock; per-frame mouse split evenly across the frame's ticks
 src/timer.js          run state, splits, per-map records, the personal-best ghost
 src/hud.js            speedometer, ramp gauge, sync, splits, panels
@@ -331,7 +351,9 @@ the 45.57° standable-surface threshold, the 30 u/s air wish-speed cap and the 1
 from public documentation. All geometry, art and code are original and no Valve assets are used.
 
 `surf_aircontrol` is named for, and built to the shape of, the air-control genre of surf maps. It
-is not a port of any existing community map and shares no geometry with one.
+is not a port of any existing community map and shares no geometry with one. The map the genre is
+named after, `surf_air_control` / `surf_aircontrol_ksf`, is by **SnoopSh** (2012) — a tier-1,
+five-checkpoint map with two bonuses — and this is not a reproduction of it.
 
 The module layout and renderer skeleton follow
 [neomorrison/bhop](https://github.com/neomorrison/bhop); the ramp solver, the map generator, the

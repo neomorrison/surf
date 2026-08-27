@@ -2,7 +2,10 @@
    Source movement; if one of them drifts, the feel drifts with it. */
 import test from 'node:test';
 import assert from 'node:assert';
-import { MOVE, RULES, slopeOf, applyRules } from '../src/config.js';
+import { MOVE, RULES, slopeOf } from '../src/config.js';
+
+/* The rules are global, so a test that changes one puts it back. */
+const withRule = (k, v, fn) => { const was = RULES[k]; RULES[k] = v; try { fn(); } finally { RULES[k] = was; } };
 import {
   makeBody, playerMove, clearPhysics, solid, rampVolume, clipVelocity,
   findGround, rampLocal, rampUphill, findSurfRamp,
@@ -70,43 +73,58 @@ test('friction bleeds speed at sv_friction, and jumping skips it', () => {
   const dropped = 800 - Math.hypot(b.vel.x, b.vel.z);
   near(dropped, 800 * MOVE.friction * TICK, 0.01, 'one tick of friction');
 
-  const j = makeBody(0, 0, 0);
-  j.onGround = true; j.vel.z = -800;
-  playerMove(j, { forward: 0, side: 0, yaw: 0, jump: true }, TICK);
-  near(Math.hypot(j.vel.x, j.vel.z), 800, 0.001, 'a frame-perfect hop keeps every unit');
-  assert.ok(j.jumped && j.vel.y > 290, 'and leaves the ground: ' + j.vel.y.toFixed(1));
+  withRule('bunnyhopping', true, () => {
+    const j = makeBody(0, 0, 0);
+    j.onGround = true; j.vel.z = -800;
+    playerMove(j, { forward: 0, side: 0, yaw: 0, jump: true }, TICK);
+    near(Math.hypot(j.vel.x, j.vel.z), 800, 0.001, 'a frame-perfect hop keeps every unit');
+    assert.ok(j.jumped && j.vel.y > 290, 'and leaves the ground: ' + j.vel.y.toFixed(1));
+  });
 });
 
 /* ---------------- surf-server rules ---------------- */
 
-test('with bunnyhopping off, a hop can never hand you speed', () => {
-  applyRules({ bunnyhopping: false });
+test('bunnyhopping is off, so a hop can never hand you speed', () => {
+  assert.equal(RULES.bunnyhopping, false, 'every course runs sv_enablebunnyhopping 0');
   floorWorld();
   const cap = MOVE.maxSpeed * MOVE.bunnyhopFactor;
+  near(cap, 300, 1e-9, 'BUNNYJUMP_MAX_SPEED_FACTOR x 250');
   for (const start of [260, 400, 900, 1600]) {
     const b = makeBody(0, 0, 0);
     b.onGround = true; b.vel.z = -start;
     playerMove(b, { forward: 0, side: 0, yaw: 0, jump: true }, TICK);
-    const after = Math.hypot(b.vel.x, b.vel.z);
     assert.ok(b.jumped, 'the hop still happens');
-    near(after, Math.min(start, cap), 0.01, `hop from ${start}`);
+    near(Math.hypot(b.vel.x, b.vel.z), Math.min(start, cap), 0.01, `hop from ${start}`);
   }
-  applyRules({});
-  near(cap, 300, 1e-9, 'BUNNYJUMP_MAX_SPEED_FACTOR x 250');
+});
+
+test('PreventBunnyJumping scales the 3D velocity, as the engine does', () => {
+  floorWorld();
+  // Source uses mv->m_vecVelocity.Length() and scales all three components.
+  // On flat ground vy is ~0, so this only shows up if you contrive it.
+  const b = makeBody(0, 0, 0);
+  b.onGround = true; b.vel.x = 400; b.vel.y = -300; b.vel.z = 0;
+  // half of a tick's gravity lands before the jump check, so that is the
+  // velocity the clamp actually sees
+  const vyAtJump = -300 - MOVE.gravity * 0.5 * TICK;
+  const before = Math.hypot(400, vyAtJump, 0);
+  playerMove(b, { forward: 0, side: 0, yaw: 0, jump: true }, TICK);
+  const k = (MOVE.maxSpeed * MOVE.bunnyhopFactor) / before;
+  near(b.vel.x, 400 * k, 0.01, 'x scaled by the 3D fraction, not the 2D one');
+  assert.ok(Math.abs(400 * k - 400 * 300 / 500) > 0.5, 'and the 3D fraction is measurably different here');
 });
 
 test('with bunnyhopping on, a frame-perfect hop keeps everything', () => {
-  applyRules({ bunnyhopping: true });
-  floorWorld();
-  const b = makeBody(0, 0, 0);
-  b.onGround = true; b.vel.z = -900;
-  playerMove(b, { forward: 0, side: 0, yaw: 0, jump: true }, TICK);
-  near(Math.hypot(b.vel.x, b.vel.z), 900, 0.001, 'nothing taken');
-  applyRules({});
+  withRule('bunnyhopping', true, () => {
+    floorWorld();
+    const b = makeBody(0, 0, 0);
+    b.onGround = true; b.vel.z = -900;
+    playerMove(b, { forward: 0, side: 0, yaw: 0, jump: true }, TICK);
+    near(Math.hypot(b.vel.x, b.vel.z), 900, 0.001, 'nothing taken');
+  });
 });
 
 test('the bunnyhop cap never touches a ramp, because a ramp is never ground', () => {
-  applyRules({ bunnyhopping: false });
   const r = rampWorld(55);
   const b = surf(r, 128 * 4);
   // holding jump the whole way down changes nothing: onGround is false throughout
@@ -114,7 +132,6 @@ test('the bunnyhop cap never touches a ramp, because a ramp is never ground', ()
   assert.ok(!b.onGround && !b2.onGround);
   near(b2.speed, b.speed, 0.001, 'jump held vs not held');
   assert.ok(b.speed > 500, 'and it is still a real ride: ' + b.speed.toFixed(0));
-  applyRules({});
 });
 
 /* ---------------- surfaces ---------------- */

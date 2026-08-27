@@ -3,12 +3,11 @@
    catch pad with a checkpoint. Falling puts you back on the last one with the
    clock still running, which is the only punishment a surfer respects.
 
-   Bunnyhopping is left ON here: the floor at the start of DROP IN is meant to
-   be hopped, and the pads between stages are meant to be crossed with speed
-   you built on them. surf_aircontrol is the map that runs the strict timer
-   rules.                                                                    */
+   Every course in this game plays by the same movement rules — see RULES in
+   config.js — so the floor at the start of DROP IN is still hoppable, but a
+   hop there is worth what a hop is worth anywhere: nothing above 300 u/s.   */
 import {
-  MAP, DIR, facing, cur, tvec, uvec, beginMap, endMap,
+  MAP, DIR, facing, cur, tvec, uvec, beginMap, endMap, prespeedZone,
   gap, ramp, trough, pad, enterStage, stage, checkpoint,
 } from '../mapkit.js';
 import { block, wall, zone, gate, sign, decal, voidGrid, pointGlow, monolith, MATS, NEON } from '../world.js';
@@ -23,7 +22,7 @@ export function build() {
   beginMap({
     ...meta,
     spawn: { x: -1750, y: 0, z: 0, yaw: -Math.PI / 2 },   // view yaw -90deg looks down +X
-    rules: { bunnyhopping: true, oneShot: false },
+    oneShot: false,
   });
   cur.yaw = DIR.xPlus;
 
@@ -111,11 +110,16 @@ export function build() {
   sign(cur.x, cur.y + 640, cur.z - 500, "4 — THE GAP", { color: NEON.rose, rotY: facing(DIR.zMinus), w: 520 });
   let pad4;
   {
+    /* Re-cut once bunnyhopping went off for every course. These faces used to
+       be short because you arrived on the pad with speed you had hopped up;
+       now you arrive at a walk and the ramp has to give you all of it, so the
+       faces are longer and the holes are the size the ramps can actually pay
+       for. */
     const seq = [
-      { high: 'L', len: 1700, gapAfter: 800, speed: 780 },
-      { high: 'R', len: 1600, gapAfter: 950, speed: 850 },
-      { high: 'L', len: 1600, gapAfter: 1050, speed: 900 },
-      { high: 'R', len: 1800, gapAfter: 0, speed: 950 },
+      { high: 'L', len: 2900, gapAfter: 620, speed: 600 },
+      { high: 'R', len: 2600, gapAfter: 720, speed: 680 },
+      { high: 'L', len: 2600, gapAfter: 820, speed: 760 },
+      { high: 'R', len: 2800, gapAfter: 0, speed: 820 },
     ];
     for (const s of seq) {
       ramp({ len: s.len, width: 900, angle: 58, high: s.high, enter: 0.38 });
@@ -150,6 +154,8 @@ export function build() {
     pointGlow(p.x, p.y + 320, p.z, NEON.amber, 2.0, 2200);
     MAP.finishPad = { x: p.x, y: p.y, z: p.z };
   }
+  prespeedZone();
+
   /* ---------------- scenery ---------------- */
   const b = endMap().bounds;
 

@@ -32,12 +32,14 @@ export const MOVE = {
   maxSpeed: 250,           // player max ground speed
   stopSpeed: 100,          // sv_stopspeed
   friction: 5.2,           // sv_friction
-  accelerate: 6.5,         // sv_accelerate
+  accelerate: 10,          // sv_accelerate — the value surf servers actually run
   walkSpeedMul: 0.52,      // Shift
   duckSpeedMul: 0.34,      // fully ducked
 
   /* air — every unit of speed on a surf ramp comes through here */
-  airAccelerate: 100,      // sv_airaccelerate
+  airAccelerate: 150,      // sv_airaccelerate. Surf servers run 100-150; anything above
+                           // about 16 saturates against the 30 u/s wish cap on every tick,
+                           // so the exact number changes nothing. The cap is the game.
   airWishCap: 30,          // THE rule. See the header.
 
   /* jumping */
@@ -65,25 +67,33 @@ export const MOVE = {
 };
 
 /* ============================== server rules ==============================
-   The settings a surf server actually runs, as opposed to the movement
-   constants above. A map declares these and buildMap() applies them, so the
-   rulebook in physics.js stays free of any dependency on map data.        */
+   The settings a surf server runs, as opposed to the movement constants
+   above. These are global: every course in this game plays by the same
+   movement rules, the way every map on a given server does.
 
-const DEFAULT_RULES = {
-  bunnyhopping: true,      // sv_enablebunnyhopping. false = the 1.2x jump cap above,
-                           // which is what every surf timer server runs: on those
-                           // servers a hop is a way to move, never a way to gain.
-  oneShot: false,          // no checkpoints — a fall ends the run and restarts the clock
+   They live here, and not in map data, because physics.js deliberately
+   imports nothing but this file — the rulebook must not be able to reach
+   into a map.                                                             */
+
+export const RULES = {
+  /**
+   * sv_enablebunnyhopping. With it off — which is what every surf timer
+   * server runs — Source scales your velocity back to
+   * BUNNYJUMP_MAX_SPEED_FACTOR x m_flMaxspeed on the tick you jump. Hopping
+   * is then a way to move, never a way to gain.
+   */
+  bunnyhopping: false,
+
+  /**
+   * The ceiling on your speed inside a start zone, in u/s. This one is not an
+   * engine cvar: prespeed limits are a timer-plugin feature and the number is
+   * a server's choice, with 300-350 the usual range on surf. It is enforced
+   * continuously while you are inside the zone, and every map's zone is built
+   * to reach its first ramp face, so it is not possible to touch a ramp
+   * faster than this.
+   */
+  prespeedCap: 350,
 };
-
-export const RULES = { ...DEFAULT_RULES };
-
-/** Replace the rule set wholesale. Anything a map does not name goes back to default. */
-export function applyRules(o) {
-  for (const k in DEFAULT_RULES) RULES[k] = DEFAULT_RULES[k];
-  if (o) for (const k in o) if (k in RULES) RULES[k] = o[k];
-  return RULES;
-}
 
 /* Angle helpers — maps are authored in degrees because that is how a surf
    ramp is actually thought about ("a 55 is rideable, a 70 is not"). */
@@ -101,7 +111,6 @@ export const SETTINGS = {
   showKeys: true,
   showSync: true,
   showGhost: true,         // replay of your personal best
-  viewRoll: true,          // camera leans into the strafe you are holding
   sound: true,
 };
 
