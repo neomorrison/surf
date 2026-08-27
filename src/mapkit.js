@@ -104,13 +104,34 @@ export function killUnderRoute(allowance = 620, halfWidth = 2600) {
 export function prespeedZone(o = {}) {
   const first = MAP.route[0];
   if (!first) return null;
-  const past = o.past == null ? 260 : o.past;           // reach beyond the first ride point
-  const wide = o.wide == null ? 900 : o.wide;           // and out to either side of the line
-  const t = tvec(first.yaw);
-  const ex = first.x + t.x * past, ez = first.z + t.z * past;
 
-  const minX = Math.min(MAP.spawn.x, ex) - wide, maxX = Math.max(MAP.spawn.x, ex) + wide;
-  const minZ = Math.min(MAP.spawn.z, ez) - wide, maxZ = Math.max(MAP.spawn.z, ez) + wide;
+  /* Pad across the direction of travel, never along it. Padding along travel
+     is the same mistake that put the kill slabs over the ride line: 900 units
+     of it here reached a thousand units *up the first ramp*, so the clamp was
+     still holding you at 350 while you were already surfing. Along travel this
+     reaches well back behind the spawn and only just past the first face —
+     far enough that the clamp is still on at the moment you touch it, and no
+     further. */
+  const back = o.back == null ? 1400 : o.back;          // behind the spawn
+  const past = o.past == null ? 48 : o.past;            // beyond the first face
+  const wide = o.wide == null ? 900 : o.wide;           // either side of the line
+
+  const t = tvec(first.yaw);
+  const alongX = Math.abs(t.x) > 0.7;
+  let minX, maxX, minZ, maxZ;
+  if (alongX) {
+    const dir = Math.sign(t.x);
+    const a = MAP.spawn.x - dir * back, b = first.x + dir * past;
+    minX = Math.min(a, b); maxX = Math.max(a, b);
+    minZ = Math.min(MAP.spawn.z, first.z) - wide;
+    maxZ = Math.max(MAP.spawn.z, first.z) + wide;
+  } else {
+    const dir = Math.sign(t.z);
+    const a = MAP.spawn.z - dir * back, b = first.z + dir * past;
+    minZ = Math.min(a, b); maxZ = Math.max(a, b);
+    minX = Math.min(MAP.spawn.x, first.x) - wide;
+    maxX = Math.max(MAP.spawn.x, first.x) + wide;
+  }
   const minY = Math.min(MAP.spawn.y, first.y) - 400;
   const maxY = Math.max(MAP.spawn.y, first.y) + 900;
 

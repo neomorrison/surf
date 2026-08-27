@@ -81,6 +81,32 @@ test("every course's prespeed zone reaches its first ramp — it cannot leak", (
   }
 });
 
+test("...and stops there — the clamp must not follow you up the ramp", () => {
+  /* The mirror of the test above, and the more easily missed half. A zone
+     padded along the direction of travel rather than across it reached a
+     thousand units up the first face, so you were held at 350 while already
+     surfing. Both ends matter: it has to reach the face, and stop at it. */
+  const rows = [];
+  for (const id of IDS) {
+    buildMap(id);
+    const z = TRIGGERS.find(t => t.kind === 'prespeed');
+    const first = MAP.route[0];
+    const t = { x: Math.sin(first.yaw), z: Math.cos(first.yaw) };
+    const alongX = Math.abs(t.x) > 0.7;
+    const dir = alongX ? Math.sign(t.x) : Math.sign(t.z);
+    const far = alongX ? (dir > 0 ? z.maxX : -z.minX) : (dir > 0 ? z.maxZ : -z.minZ);
+    const face = alongX ? dir * first.x : dir * first.z;
+    const overshoot = far - face;
+    rows.push({ map: MAP.name, overshoot });
+    assert.ok(overshoot >= 0, `${id}: the zone stops ${(-overshoot).toFixed(0)} units short of the face`);
+    assert.ok(overshoot <= 120,
+      `${id}: the zone runs ${overshoot.toFixed(0)} units past the first face — that is ramp you are being clamped on`);
+  }
+  console.log('\n  course            clamp still on, past the first face');
+  for (const r of rows) console.log(`  ${r.map.padEnd(18)} ${r.overshoot.toFixed(0).padStart(6)} units`);
+  console.log('');
+});
+
 test('surf_aircontrol is one shot, with kill volumes instead of checkpoints', () => {
   buildMap('aircontrol');
   assert.equal(MAP.oneShot, true);
