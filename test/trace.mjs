@@ -8,7 +8,7 @@
    `map` is a map id (aircontrol, helix). `stage` is a stage index — 1 is the
    first real stage — or 0 to fly the whole course from spawn.               */
 import './dom-stub.mjs';
-import { buildMap, MAP } from '../src/map.js';
+import { buildMapSync as buildMap, MAP } from '../src/map.js';
 import { MOVE } from '../src/config.js';
 import { triggersAt, rampLocal } from '../src/physics.js';
 import { makeBot, step } from './surfbot.mjs';

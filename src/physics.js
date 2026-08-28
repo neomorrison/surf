@@ -36,6 +36,7 @@ const UP = Object.freeze({ x: 0, y: 1, z: 0 });
 
 export function clearPhysics() {
   SOLIDS.length = 0; RAMPS.length = 0; BRUSHES.length = 0; TRIGGERS.length = 0;
+  GRID.cells = null;
 }
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
@@ -172,6 +173,56 @@ export function brush(planes, tag) {
   return b;
 }
 
+/* ---------------- broadphase ----------------
+   A hand-authored course has a few dozen brushes and a linear scan is free.
+   A real map has over a thousand, and the scan runs four times per collision
+   pass, up to sixteen passes a tick, a hundred and twenty-eight ticks a
+   second. So brushes go in a uniform grid and only the cells the hull sits in
+   are ever looked at. `stamp` is a visit marker: a brush spanning many cells
+   is returned once, without allocating a set per query. */
+
+const GRID = { cell: 0, cells: null };
+let visitStamp = 0;
+
+const key = (x, y, z) => `${x},${y},${z}`;
+
+/** Index every brush by cell. Call once, after the world is built. */
+export function buildBrushGrid(cell = 512) {
+  GRID.cell = cell;
+  GRID.cells = new Map();
+  for (const b of BRUSHES) {
+    b.stamp = 0;
+    for (let x = Math.floor(b.minX / cell); x <= Math.floor(b.maxX / cell); x++) {
+      for (let y = Math.floor(b.minY / cell); y <= Math.floor(b.maxY / cell); y++) {
+        for (let z = Math.floor(b.minZ / cell); z <= Math.floor(b.maxZ / cell); z++) {
+          const k = key(x, y, z);
+          let list = GRID.cells.get(k);
+          if (!list) GRID.cells.set(k, list = []);
+          list.push(b);
+        }
+      }
+    }
+  }
+  return GRID.cells.size;
+}
+
+/** Brushes whose cells the given box touches. Falls back to all of them. */
+export function brushesNear(minX, minY, minZ, maxX, maxY, maxZ, out) {
+  if (!GRID.cells) return BRUSHES;
+  out.length = 0;
+  const c = GRID.cell, s = ++visitStamp;
+  for (let x = Math.floor(minX / c); x <= Math.floor(maxX / c); x++) {
+    for (let y = Math.floor(minY / c); y <= Math.floor(maxY / c); y++) {
+      for (let z = Math.floor(minZ / c); z <= Math.floor(maxZ / c); z++) {
+        const list = GRID.cells.get(key(x, y, z));
+        if (!list) continue;
+        for (const b of list) if (b.stamp !== s) { b.stamp = s; out.push(b); }
+      }
+    }
+  }
+  return out;
+}
+
 /** How far a plane must move along its own normal to clear the hull. */
 function hullOffset(p, radius, height) {
   return radius * Math.abs(p.x) + (height / 2) * Math.abs(p.y) + radius * Math.abs(p.z);
@@ -271,7 +322,8 @@ export function findGround(x, z, lo, hi, radius) {
     if (y < lo || y > hi) continue;
     if (y > bestY) { bestY = y; bestN = r.n; bestRamp = r; }
   }
-  for (const b of BRUSHES) {
+  for (const b of brushesNear(x - radius, lo - 2, z - radius,
+                              x + radius, hi + MOVE.standHeight, z + radius, nearby)) {
     if (!b.walkable) continue;
     if (b.maxY < lo - 1 || b.minY > hi + MOVE.standHeight) continue;
     if (x + radius <= b.minX || x - radius >= b.maxX) continue;
@@ -307,7 +359,7 @@ export function hullFits(x, y, z, height, radius) {
     if (!rampFootprint(r, x, z, radius)) continue;
     if (y + height > r.base + 0.01 && y < rampSurfaceY(r, x, z) - 0.01) return false;
   }
-  for (const b of BRUSHES) {
+  for (const b of brushesNear(x - radius, y, z - radius, x + radius, y + height, z + radius, nearby)) {
     if (brushContact(b, x, y, z, radius, height)) return false;
   }
   return true;
@@ -337,7 +389,8 @@ export function findSurfContact(x, y, z, radius, height = MOVE.standHeight, reac
   }
 
   const cy = y + height / 2;
-  for (const b of BRUSHES) {
+  for (const b of brushesNear(x - radius, y - reach, z - radius,
+                              x + radius, y + height + reach, z + radius, nearby)) {
     if (y >= b.maxY + reach || y + height <= b.minY) continue;
     if (x + radius <= b.minX || x - radius >= b.maxX) continue;
     if (z + radius <= b.minZ || z - radius >= b.maxZ) continue;
@@ -451,7 +504,8 @@ function resolve(pos, vel, height, canStep, radius, out) {
       if (out && !r.walkable) { out.ramp = r; }
     }
 
-    for (const b of BRUSHES) {
+    for (const b of brushesNear(pos.x - radius, pos.y, pos.z - radius,
+                                pos.x + radius, pos.y + height, pos.z + radius, nearby)) {
       if (pos.y >= b.maxY - 0.005 || pos.y + height <= b.minY + 0.005) continue;
       if (pos.x + radius <= b.minX || pos.x - radius >= b.maxX) continue;
       if (pos.z + radius <= b.minZ || pos.z - radius >= b.maxZ) continue;
@@ -542,6 +596,7 @@ export function makeBody(x = 0, y = 0, z = 0) {
 }
 
 const contact = { ramp: null, normal: null };
+const nearby = [];          // scratch list for broadphase queries
 
 /**
  * One fixed simulation tick.

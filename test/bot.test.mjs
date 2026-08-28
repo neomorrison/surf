@@ -5,7 +5,7 @@
 import './dom-stub.mjs';
 import test from 'node:test';
 import assert from 'node:assert';
-import { buildMap, MAP, MAPS } from '../src/map.js';
+import { buildMapSync as buildMap, MAP, MAPS } from '../src/map.js';
 import { MOVE, RULES } from '../src/config.js';
 import { triggersAt, makeBody, playerMove } from '../src/physics.js';
 import { makeBot, step } from './surfbot.mjs';

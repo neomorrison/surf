@@ -335,10 +335,10 @@ function loadMapChoice() {
  * in place, so nothing else needs to be told the map changed — but the HUD's
  * split rows and the practice list are per-course and do get rebuilt.
  */
-function selectMap(id) {
+async function selectMap(id) {
   mapId = MAPS.some(m => m.id === id) ? id : DEFAULT_MAP;
   try { localStorage.setItem(LS_MAP, mapId); } catch (e) {}
-  buildMap(mapId);
+  await buildMap(mapId);
   loadRecords();
   resetRun();
   resetPlayer();
@@ -365,7 +365,11 @@ function renderMapPicker() {
     const pb = document.createElement("i");
     pb.textContent = best == null ? "no personal best" : "best " + formatTime(best);
     card.append(name, blurb, pb);
-    card.addEventListener("click", () => { sfxUi(); selectMap(m.id); });
+    card.addEventListener("click", () => {
+      sfxUi();
+      card.classList.add("loading");
+      selectMap(m.id).catch(e => { console.error(e); card.classList.remove("loading"); });
+    });
     box.appendChild(card);
   }
   const pb = $("#startPB");
@@ -420,9 +424,10 @@ function boot() {
   setFov(SETTINGS.fov);
   wireSettings(); syncSettingsUI();
   initTrail(); initGhost();
-  selectMap(loadMapChoice());
   // Courses from local/ (gitignored, offline only) join the picker if present.
-  loadLocalMaps().then(n => { if (n) renderMapPicker(); });
+  loadLocalMaps()
+    .then(() => selectMap(loadMapChoice()))
+    .catch(e => { console.error(e); selectMap(DEFAULT_MAP); });
 
   initInput(renderer.domElement, {
     onKey,

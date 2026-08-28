@@ -35,10 +35,24 @@ export async function loadLocalMaps() {
 
 export const DEFAULT_MAP = "aircontrol";
 
-/** Build a course by id. Falls back to the default rather than throwing. */
-export function buildMap(id = DEFAULT_MAP) {
+/**
+ * Build a course by id. Falls back to the default rather than throwing.
+ *
+ * Async because a course can come from a file: the built-in ones return
+ * synchronously and `await` on them costs nothing, but a .bsp has to be
+ * fetched before there is anything to build.
+ */
+export async function buildMap(id = DEFAULT_MAP) {
   const entry = MAPS.find(m => m.id === id) || MAPS.find(m => m.id === DEFAULT_MAP) || MAPS[0];
-  entry.build();
+  await entry.build();
+  return MAP;
+}
+
+/** The synchronous path, for the built-in courses and the tests. */
+export function buildMapSync(id = DEFAULT_MAP) {
+  const entry = MAPS.find(m => m.id === id) || MAPS.find(m => m.id === DEFAULT_MAP) || MAPS[0];
+  const r = entry.build();
+  if (r && typeof r.then === 'function') throw new Error(`${id} must be built with buildMap()`);
   return MAP;
 }
 
