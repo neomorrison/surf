@@ -16,7 +16,8 @@
 const HEADER = 1036;                    // ident + version + 64 lumps + revision
 
 export const LUMP = {
-  ENTITIES: 0, PLANES: 1, TEXDATA: 2, VERTEXES: 3, TEXINFO: 6, FACES: 7, LIGHTING: 8,
+  ENTITIES: 0, PLANES: 1, TEXDATA: 2, VERTEXES: 3, NODES: 5, TEXINFO: 6, FACES: 7, LIGHTING: 8,
+  LEAFS: 10, LEAFBRUSHES: 17,
   EDGES: 12, SURFEDGES: 13, MODELS: 14, BRUSHES: 18, BRUSHSIDES: 19,
   DISPINFO: 26, DISP_VERTS: 33, PAKFILE: 40, TEXDATA_STRING_DATA: 43, TEXDATA_STRING_TABLE: 44,
 };
@@ -518,6 +519,60 @@ class Bsp {
       built++;
     }
     return { groups: [...groups.values()], count: built, triangles };
+  }
+
+  /**
+   * The brushes a brush entity is actually made of.
+   *
+   * A trigger's bounding box is not the trigger. A boundary volume built as a
+   * shell, or as a scatter of thin slabs, has a box that swallows all the open
+   * air between them -- and treating that box as the volume teleports a player
+   * flying through clear space. So the model's BSP tree is walked down to its
+   * leaves and the real brushes collected.
+   *
+   * Planes come back in the model's own space; add the entity origin to place
+   * them. Translating a plane by t moves its distance by n.t.
+   */
+  modelBrushes(modelIndex) {
+    const md = this.lump(LUMP.MODELS), nd = this.lump(LUMP.NODES);
+    const lf = this.lump(LUMP.LEAFS), lb = this.lump(LUMP.LEAFBRUSHES);
+    const leafStride = lf.version === 0 ? 56 : 32;      // v0 carries a light cube
+    const nLeaf = Math.floor(lf.len / leafStride);
+    const planes = this.planes(), sides = this.brushSides();
+    const br = this.lump(LUMP.BRUSHES);
+
+    const found = new Set();
+    const stack = [this.dv.getInt32(md.ofs + modelIndex * 48 + 36, true)];
+    let guard = 0;
+    while (stack.length && guard++ < 200000) {
+      const node = stack.pop();
+      if (node < 0) {
+        const li = -1 - node;
+        if (li >= nLeaf) continue;
+        const o = lf.ofs + li * leafStride;
+        const first = this.dv.getUint16(o + 24, true);
+        const num = this.dv.getUint16(o + 26, true);
+        for (let k = 0; k < num; k++) found.add(this.dv.getUint16(lb.ofs + (first + k) * 2, true));
+        continue;
+      }
+      const o = nd.ofs + node * 32;
+      stack.push(this.dv.getInt32(o + 4, true), this.dv.getInt32(o + 8, true));
+    }
+
+    const out = [];
+    for (const bi of found) {
+      const o = br.ofs + bi * 12;
+      const first = this.dv.getInt32(o, true);
+      const num = this.dv.getInt32(o + 4, true);
+      const contents = this.dv.getInt32(o + 8, true);
+      const ps = [];
+      for (let k = 0; k < num; k++) {
+        const sd = sides[first + k];
+        if (sd) ps.push(planes[sd.planenum]);
+      }
+      if (ps.length >= 4) out.push({ planes: ps, contents });
+    }
+    return out;
   }
 
   /**

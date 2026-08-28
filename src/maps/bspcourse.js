@@ -15,7 +15,10 @@ import * as THREE from 'three';
 import { scene, renderer, setSky, setEnvironment, SKY_DAY } from '../core.js';
 import { MAP, beginMap, endMap, mark } from '../mapkit.js';
 import { mapGroup, NEON } from '../world.js';
-import { brush, trigger, buildBrushGrid, setTriangles, BRUSHES } from '../physics.js';
+import {
+  brush, brushVertices, trigger, triggersAt, hullFits, findGround,
+  buildBrushGrid, setTriangles, BRUSHES,
+} from '../physics.js';
 import { MOVE } from '../config.js';
 import { readBsp } from '../bsp.js';
 import { resolveTexture, parseVtf, makeTexture } from '../vtf.js';
@@ -80,24 +83,28 @@ export function buildFromBsp(bsp, meta) {
   const zones = findZones(ents, models);
   const startBox = zones.start, endBox = zones.end;
 
-  /* The spawn nearest the start zone is the one a run actually begins from:
-     a map carries dozens of them, most for the other team or other stages. */
+  /* A map carries dozens of spawns, most for the other team or other stages.
+     Rank them by distance to the start zone and keep the whole list: the
+     nearest is usually right, but not always somewhere a player can stand, and
+     settleSpawn() works down the list until one is. */
   const spawns = ents.filter(e => /^info_player_(counter)?terrorist$/.test(e.classname || '') && e.pos);
-  let spawn = spawns[0];
   if (startBox && spawns.length) {
     const c = boxOf(startBox);
-    let bestD = Infinity;
-    for (const sp of spawns) {
-      const d = (sp.pos.x - c.x) ** 2 + (sp.pos.y - c.y) ** 2 + (sp.pos.z - c.z) ** 2;
-      if (d < bestD) { bestD = d; spawn = sp; }
-    }
+    const d2 = e => (e.pos.x - c.x) ** 2 + (e.pos.y - c.y) ** 2 + (e.pos.z - c.z) ** 2;
+    spawns.sort((a, b) => d2(a) - d2(b));
   }
+  const spawn = spawns[0];
   const yaw = viewYawFromSource(spawn ? +(spawn.angles || '0 0 0').split(/\s+/)[1] : 0);
 
   beginMap({
     ...meta,
+    /* An info_player_* origin is the player's FEET, not their centre. Placing
+       the hull half a height lower buried it in the floor on four of six maps
+       -- and a hull inside the floor gets pushed out along whichever axis is
+       shallowest, which is often sideways, through a wall and into the void.
+       That was "you spawn out of the map". */
     spawn: spawn
-      ? { x: spawn.pos.x, y: spawn.pos.y - MOVE.standHeight / 2, z: spawn.pos.z, yaw }
+      ? { x: spawn.pos.x, y: spawn.pos.y, z: spawn.pos.z, yaw }
       : { x: 0, y: 0, z: 0, yaw: 0 },
     oneShot: true,
   });
@@ -139,10 +146,15 @@ export function buildFromBsp(bsp, meta) {
   MAP.stages.push({ i: 2, name: 'FINISH', hint: '', color: NEON.amber, floorY: world.minY - 4000 });
 
   const zone = (m, data) => trigger(m.minX, m.maxX, m.minY, m.maxY, m.minZ, m.maxZ, data);
-  if (startBox) zone(startBox, { kind: 'start' });
+  const startEnt = zones.startEnt;
+  let startVols = startEnt ? entityVolumes(bsp, startEnt) : [];
+  if (!startVols.length && startBox) startVols = [startBox];
+  for (const v of startVols) zone(v, { kind: 'start' });
 
   if (endBox) {
-    zone(endBox, { kind: 'finish' });
+    let endVols = zones.endEnt ? entityVolumes(bsp, zones.endEnt) : [];
+    if (!endVols.length) endVols = [endBox];
+    for (const v of endVols) zone(v, { kind: 'finish' });
     const c = boxOf(endBox);
     MAP.finishPad = { x: c.x, y: endBox.minY, z: c.z };
   }
@@ -160,24 +172,24 @@ export function buildFromBsp(bsp, meta) {
       dests.set(e.targetname.toLowerCase(), e);
     }
   }
-  let tele = 0, pits = 0;
+  let tele = 0, pits = 0, dormant = 0, vols = 0;
   for (const e of ents) {
     if (e.classname !== 'trigger_teleport') continue;
-    const m = entityBox(models, e);
-    if (!m) continue;
+    if (!triggerIsLive(e)) { dormant++; continue; }
+    let boxes = entityVolumes(bsp, e);
+    if (!boxes.length) { const m = entityBox(models, e); if (m) boxes = [m]; }
+    if (!boxes.length) continue;
     const d = e.target && dests.get(e.target.toLowerCase());
-    if (d) {
-      zone(m, {
-        kind: 'teleport',
-        tx: d.pos.x, ty: d.pos.y, tz: d.pos.z,
-        tyaw: viewYawFromSource(+(d.angles || '0 0 0').trim().split(/\s+/)[1]),
-      });
-      tele++;
-    } else {
-      // no destination to go to: the only thing it can be is a pit
-      zone(m, { kind: 'kill' });
-      pits++;
-    }
+    const data = d
+      ? {
+          kind: 'teleport',
+          tx: d.pos.x, ty: d.pos.y, tz: d.pos.z,
+          tyaw: viewYawFromSource(+(d.angles || '0 0 0').trim().split(/\s+/)[1]),
+        }
+      : { kind: 'kill' };                              // nowhere to go: it is a pit
+    for (const b of boxes) zone(b, data);
+    vols += boxes.length;
+    if (d) tele++; else pits++;
   }
 
   /* The prespeed zone is the start zone: that is what it is on a real server. */
@@ -185,6 +197,9 @@ export function buildFromBsp(bsp, meta) {
     trigger(startBox.minX - 64, startBox.maxX + 64, startBox.minY - 64, startBox.maxY + 512,
       startBox.minZ - 64, startBox.maxZ + 64, { kind: 'prespeed', cap: MAP.prespeed });
   }
+
+  /* Now that the volumes exist, make sure the spawn is somewhere legal. */
+  settleSpawn(spawns);
 
   /* The ride line the tests and the bot follow: start, then finish. A real map
      does not hand you one, and inferring a racing line from geometry is a
@@ -197,7 +212,8 @@ export function buildFromBsp(bsp, meta) {
   endMap();
   MAP.bounds = world;
   MAP.stats = {
-    brushes: solid, dropped, cells, teleports: tele, pits,
+    brushes: solid, dropped, cells, teleports: tele, pits, dormant, triggerVolumes: vols,
+    spawn: MAP.spawnNote,
     startZone: zones.startName || (startBox ? 'nearest spawn' : 'none'),
     endZone: zones.endName || (endBox ? 'furthest zone' : 'none'),
     timed: !!(startBox && endBox),
@@ -237,6 +253,89 @@ export function buildFromBsp(bsp, meta) {
 }
 
 /* ---------------- surface mesh ---------------- */
+
+/**
+ * Make sure the spawn is somewhere a player can actually be.
+ *
+ * Two things go wrong otherwise. A hull that starts inside geometry is pushed
+ * out along its shallowest axis, which is as likely to be sideways through a
+ * wall as upward. And a spawn sitting inside a teleport fires it on the first
+ * tick, so the run begins by being thrown somewhere before you have touched
+ * anything — following the teleport here instead starts you where the map
+ * meant to put you, without the lurch.
+ */
+function settleSpawn(candidates = []) {
+  const sp = MAP.spawn;
+  const hits = [];
+  const free = (x, y, z) => hullFits(x, y, z, MOVE.standHeight, MOVE.radius);
+  let note = 'as placed';
+
+  /* Step out of any teleport the spawn stands in -- but only if the far end is
+     somewhere a player can be. Destinations are not always clear: summer's own
+     teleports carry CheckDestIfClearForPlayer, and following one blindly put
+     the spawn inside a wall with no headroom for four thousand units. */
+  for (let hop = 0; hop < 4; hop++) {
+    triggersAt({ x: sp.x, y: sp.y, z: sp.z }, MOVE.radius, MOVE.standHeight, hits);
+    const tp = hits.find(t => t.kind === 'teleport');
+    if (!tp) break;
+    let ty = null;
+    for (let up = 0; up <= 128; up += 8) {
+      if (free(tp.tx, tp.ty + up, tp.tz)) { ty = tp.ty + up; break; }
+    }
+    if (ty == null) { note = 'left in place; its teleport leads into geometry'; break; }
+    sp.x = tp.tx; sp.y = ty; sp.z = tp.tz;
+    if (tp.tyaw != null && Number.isFinite(tp.tyaw)) sp.yaw = tp.tyaw;
+    note = 'followed a teleport';
+  }
+
+  if (free(sp.x, sp.y, sp.z)) { MAP.spawnNote = note; return; }
+
+  // lift straight up out of whatever it is embedded in
+  for (let up = 4; up <= 256; up += 4) {
+    if (free(sp.x, sp.y + up, sp.z)) {
+      sp.y += up;
+      MAP.spawnNote = note + ', lifted ' + up + 'u clear';
+      return;
+    }
+  }
+
+  // still stuck: stand on the nearest surface underneath instead
+  const g = findGround(sp.x, sp.z, sp.y - 2048, sp.y + 256, MOVE.radius);
+  if (g && free(sp.x, g.y + 2, sp.z)) {
+    sp.y = g.y + 2;
+    MAP.spawnNote = note + ', dropped to the floor below';
+    return;
+  }
+
+  // or the nearest free spot on a small ring, before giving up
+  for (const r of [64, 160, 320]) {
+    for (let a = 0; a < 8; a++) {
+      const th = a * Math.PI / 4;
+      const x = sp.x + Math.cos(th) * r, z = sp.z + Math.sin(th) * r;
+      for (let up = 0; up <= 128; up += 16) {
+        if (free(x, sp.y + up, z)) {
+          sp.x = x; sp.z = z; sp.y += up;
+          MAP.spawnNote = note + `, moved ${r}u aside`;
+          return;
+        }
+      }
+    }
+  }
+  /* This spawn point is unusable; a map has dozens, so work down the list. Each
+     is tried with a small lift as well as where it sits, because a spawn resting
+     on a floor touches it and a bare fit test would reject every legal one. */
+  for (let i = 1; i < candidates.length; i++) {
+    const c = candidates[i];
+    for (let up = 0; up <= 64; up += 8) {
+      if (!free(c.pos.x, c.pos.y + up, c.pos.z)) continue;
+      sp.x = c.pos.x; sp.y = c.pos.y + up; sp.z = c.pos.z;
+      sp.yaw = viewYawFromSource(+(c.angles || '0 0 0').trim().split(/\s+/)[1]);
+      MAP.spawnNote = `spawn ${i + 1} of ${candidates.length}; the nearer ones were inside geometry`;
+      return;
+    }
+  }
+  MAP.spawnNote = note + ', STILL EMBEDDED';
+}
 
 /* ---------------- materials ---------------- */
 
@@ -331,6 +430,51 @@ function addGroup(g, lib) {
   return !!mat.texture;
 }
 
+/**
+ * The volumes a brush entity really occupies, one box per brush.
+ *
+ * Not its bounding box. A boundary trigger built as a shell, or as a scatter
+ * of thin slabs, has a box that swallows every bit of open air between them:
+ * measured on these maps, 99% of one cyberwave teleport's box and 84% of a
+ * summer one was empty space. Using the box teleports a player flying through
+ * clear air, which is exactly the reported bug.
+ *
+ * Brush planes are stored in the entity's own space, so the origin is added on
+ * the way out — translating a plane by t moves its distance by n·t.
+ */
+function entityVolumes(bsp, ent) {
+  if (!ent || !ent.model || ent.model[0] !== '*') return [];
+  const p = ent.pos || { x: 0, y: 0, z: 0 };
+  const out = [];
+  for (const b of bsp.modelBrushes(+ent.model.slice(1))) {
+    const planes = b.planes.map(q => ({ x: q.x, y: q.y, z: q.z, d: q.d + q.x * p.x + q.y * p.y + q.z * p.z }));
+    const verts = brushVertices(planes);
+    if (verts.length < 4) continue;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (const v of verts) {
+      if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+      if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+      if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+    }
+    out.push({ minX, maxX, minY, maxY, minZ, maxZ });
+  }
+  return out;
+}
+
+/**
+ * Is this trigger live for a plain player?
+ *
+ * Maps switch triggers on and off from their own logic, and filter some to
+ * particular activators. Firing all of them at once is not what the map does.
+ */
+function triggerIsLive(ent) {
+  if (ent.StartDisabled === '1' || ent.startdisabled === '1') return false;
+  if (ent.filtername) return false;                    // aimed at something that is not you
+  const flags = +(ent.spawnflags || 1);
+  return (flags & 1) !== 0 || (flags & 64) !== 0;      // clients, or everything
+}
+
 /* ---------------- timer zones ---------------- */
 
 const BONUS = /bonus|^b\d|_b\d/i;
@@ -390,6 +534,8 @@ export function findZones(ents, models) {
   return {
     start: start ? start.box : null,
     end: end ? end.box : null,
+    startEnt: start ? start.ent : null,
+    endEnt: end ? end.ent : null,
     startName: start ? start.name : null,
     endName: end ? end.name : null,
     candidates: triggers.length,
