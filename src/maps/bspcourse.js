@@ -267,7 +267,11 @@ export function buildFromBsp(bsp, meta) {
 function settleSpawn(candidates = []) {
   const sp = MAP.spawn;
   const hits = [];
-  const free = (x, y, z) => hullFits(x, y, z, MOVE.standHeight, MOVE.radius);
+  /* Slightly shrunken: hullFits() demands zero contact, which is right when
+     asking whether you may un-duck but far too strict for "can a player stand
+     here" -- a spawn in a clip-sealed room touches something by construction.
+     Shrinking by a unit tolerates touching without tolerating embedding. */
+  const free = (x, y, z) => hullFits(x, y + 1, z, MOVE.standHeight - 2, MOVE.radius - 1);
   let note = 'as placed';
 
   /* Step out of any teleport the spawn stands in -- but only if the far end is

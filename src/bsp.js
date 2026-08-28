@@ -171,6 +171,47 @@ class Bsp {
     return files;
   }
 
+  /**
+   * Where each model's geometry actually belongs.
+   *
+   * Model 0 is the world and sits at the origin. Every other model is a brush
+   * entity whose geometry -- bounds, faces and brushes alike -- is stored
+   * relative to its `origin` keyvalue, so all three need the same translation
+   * on the way out. Without it a map's doors, platforms, glass and decorative
+   * brushwork are all drawn and collided in a heap at the world centre, and
+   * missing from where they belong.
+   *
+   * Returns offsets in Y-up, plus the models belonging to entities that are
+   * not solid and should never reach the collision world.
+   */
+  modelPlacement() {
+    const n = this.count(LUMP.MODELS, 48);
+    const offset = new Array(n).fill(null);
+    const nonSolid = new Set();
+    const NEVER_SOLID = /^(func_illusionary|func_dustmotes|func_smokevolume|func_precipitation|env_bubbles|func_occluder|trigger_)/;
+    for (const e of this.entities()) {
+      if (!e.model || e.model[0] !== '*') continue;
+      const i = +e.model.slice(1);
+      if (!(i >= 0 && i < n)) continue;
+      if (e.pos && (e.pos.x || e.pos.y || e.pos.z)) offset[i] = e.pos;
+      if (NEVER_SOLID.test(e.classname || '')) nonSolid.add(i);
+    }
+    return { offset, nonSolid };
+  }
+
+  /** Which model owns each face, from the models' face ranges. */
+  faceModels() {
+    const md = this.lump(LUMP.MODELS), n = this.count(LUMP.MODELS, 48);
+    const owner = new Int16Array(this.count(LUMP.FACES, 56));
+    for (let m = 0; m < n; m++) {
+      const o = md.ofs + m * 48;
+      const first = this.dv.getInt32(o + 40, true);
+      const num = this.dv.getInt32(o + 44, true);
+      for (let f = first; f < first + num && f < owner.length; f++) owner[f] = m;
+    }
+    return owner;
+  }
+
   /* ---------------- geometry ---------------- */
 
   planes() {
@@ -210,6 +251,16 @@ class Bsp {
   brushes(mask = CONTENTS.SOLID | CONTENTS.PLAYERCLIP) {
     const planes = this.planes(), sides = this.brushSides();
     const l = this.lump(LUMP.BRUSHES), n = this.count(LUMP.BRUSHES, 12);
+    const { offset, nonSolid } = this.modelPlacement();
+
+    /* Attribute brushes to their model so brush entities can be translated
+       and the non-solid ones dropped. Model 0's brushes need neither. */
+    const owner = new Map();
+    for (let m = 1; m < offset.length; m++) {
+      if (!offset[m] && !nonSolid.has(m)) continue;
+      for (const bi of this.modelBrushIndices(m)) owner.set(bi, m);
+    }
+
     const out = [];
     for (let i = 0; i < n; i++) {
       const o = l.ofs + i * 12;
@@ -217,10 +268,15 @@ class Bsp {
       const num = this.dv.getInt32(o + 4, true);
       const contents = this.dv.getInt32(o + 8, true);
       if (!(contents & mask)) continue;
+      const m = owner.get(i);
+      if (m != null && nonSolid.has(m)) continue;          // decorative, not collidable
+      const t = m != null ? offset[m] : null;
       const ps = [];
       for (let k = 0; k < num; k++) {
         const s = sides[first + k];
-        if (s) ps.push(planes[s.planenum]);
+        if (!s) continue;
+        const p = planes[s.planenum];
+        ps.push(t ? { x: p.x, y: p.y, z: p.z, d: p.d + p.x * t.x + p.y * t.y + p.z * t.z } : p);
       }
       if (ps.length >= 4) out.push({ planes: ps, contents });
     }
@@ -274,6 +330,11 @@ class Bsp {
     const til = this.lump(LUMP.TEXINFO), lml = this.lump(LUMP.LIGHTING);
     const tex = this.textureNames();
     const bytes = new Uint8Array(this.buffer);
+    /* A brush entity's faces are stored relative to its origin, exactly like
+       its bounds, so they need the same translation or the map's doors,
+       platforms and glass all end up heaped at the world centre. */
+    const owner = this.faceModels();
+    const { offset } = this.modelPlacement();
 
     /* Vertices are kept in both frames: Y-up to draw with, and Source to look
        lighting and texturing up with, because a face's lightmap and texture
@@ -336,13 +397,16 @@ class Bsp {
       let g = groups.get(t.name);
       if (!g) groups.set(t.name, g = { material: t.name, pos: [], light: [], uv: [] });
 
+      const off = offset[owner[i]] || null;             // Y-up translation, if any
+
       const ring = [];
       for (let k = 0; k < numedges; k++) {
         const se = surf[firstedge + k];
         ring.push(se >= 0 ? e0[se] : e1[-se]);
       }
       const emit = v => {
-        g.pos.push(sx[v], sz[v], -sy[v]);                              // to Y-up
+        if (off) g.pos.push(sx[v] + off.x, sz[v] + off.y, -sy[v] + off.z);
+        else g.pos.push(sx[v], sz[v], -sy[v]);                        // to Y-up
         const c = hasLight
           ? (sample(lightofs, lw, lh,
               lv(0) * sx[v] + lv(1) * sy[v] + lv(2) * sz[v] + lv(3) - minS,
@@ -383,6 +447,8 @@ class Bsp {
     const lml = this.lump(LUMP.LIGHTING), pl = this.lump(LUMP.PLANES);
     const tex = this.textureNames();
     const bytes = new Uint8Array(this.buffer);
+    const owner = this.faceModels();
+    const { offset } = this.modelPlacement();
 
     const nVerts = this.count(LUMP.VERTEXES, 12);
     const sx = new Float32Array(nVerts), sy = new Float32Array(nVerts), sz = new Float32Array(nVerts);
@@ -486,9 +552,11 @@ class Bsp {
       let g = groups.get(t.name);
       if (!g) groups.set(t.name, g = { material: t.name, pos: [], light: [], uv: [] });
 
+      const off = offset[owner[mapFace]] || null;
       const emit = idx => {
         const X = gx[idx], Y = gy[idx], Z = gz[idx];
-        g.pos.push(X, Z, -Y);                          // to Y-up
+        if (off) g.pos.push(X + off.x, Z + off.y, -Y + off.z);
+        else g.pos.push(X, Z, -Y);                     // to Y-up
         const i = Math.floor(idx / side), j = idx % side;
         const c2 = hasLight
           ? (luxel(lightofs, lw, lh, j / (side - 1) * (lw - 1), i / (side - 1) * (lh - 1)) || { r: 0.35, g: 0.35, b: 0.38 })
@@ -534,12 +602,30 @@ class Bsp {
    * them. Translating a plane by t moves its distance by n.t.
    */
   modelBrushes(modelIndex) {
+    const planes = this.planes(), sides = this.brushSides();
+    const br = this.lump(LUMP.BRUSHES);
+    const out = [];
+    for (const bi of this.modelBrushIndices(modelIndex)) {
+      const o = br.ofs + bi * 12;
+      const first = this.dv.getInt32(o, true);
+      const num = this.dv.getInt32(o + 4, true);
+      const contents = this.dv.getInt32(o + 8, true);
+      const ps = [];
+      for (let k = 0; k < num; k++) {
+        const sd = sides[first + k];
+        if (sd) ps.push(planes[sd.planenum]);
+      }
+      if (ps.length >= 4) out.push({ planes: ps, contents });
+    }
+    return out;
+  }
+
+  /** The brush indices a model's BSP tree reaches. */
+  modelBrushIndices(modelIndex) {
     const md = this.lump(LUMP.MODELS), nd = this.lump(LUMP.NODES);
     const lf = this.lump(LUMP.LEAFS), lb = this.lump(LUMP.LEAFBRUSHES);
     const leafStride = lf.version === 0 ? 56 : 32;      // v0 carries a light cube
     const nLeaf = Math.floor(lf.len / leafStride);
-    const planes = this.planes(), sides = this.brushSides();
-    const br = this.lump(LUMP.BRUSHES);
 
     const found = new Set();
     const stack = [this.dv.getInt32(md.ofs + modelIndex * 48 + 36, true)];
@@ -559,20 +645,7 @@ class Bsp {
       stack.push(this.dv.getInt32(o + 4, true), this.dv.getInt32(o + 8, true));
     }
 
-    const out = [];
-    for (const bi of found) {
-      const o = br.ofs + bi * 12;
-      const first = this.dv.getInt32(o, true);
-      const num = this.dv.getInt32(o + 4, true);
-      const contents = this.dv.getInt32(o + 8, true);
-      const ps = [];
-      for (let k = 0; k < num; k++) {
-        const sd = sides[first + k];
-        if (sd) ps.push(planes[sd.planenum]);
-      }
-      if (ps.length >= 4) out.push({ planes: ps, contents });
-    }
-    return out;
+    return found;
   }
 
   /**
