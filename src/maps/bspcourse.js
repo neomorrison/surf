@@ -12,7 +12,7 @@
    unreadable, and the one thing you need to see from a long way off is which
    surfaces you can ride.                                                    */
 import * as THREE from 'three';
-import { scene } from '../core.js';
+import { scene, setSky, setEnvironment, SKY_DAY } from '../core.js';
 import { MAP, beginMap, endMap, mark } from '../mapkit.js';
 import { mapGroup, NEON } from '../world.js';
 import { brush, trigger, buildBrushGrid, BRUSHES } from '../physics.js';
@@ -103,8 +103,8 @@ export function buildFromBsp(bsp, meta) {
   const cells = buildBrushGrid(512);
 
   /* ---------------- what you see ---------------- */
-  const { positions, faces, skipped, displacements } = bsp.faces();
-  addSurface(positions);
+  const surface = bsp.faces();
+  addSurface(surface.positions, surface.light);
 
   /* ---------------- the run ---------------- */
   MAP.stages.push({ i: 0, name: 'START', hint: '', color: NEON.lime, floorY: world.minY - 4000 });
@@ -150,52 +150,97 @@ export function buildFromBsp(bsp, meta) {
 
   endMap();
   MAP.bounds = world;
-  MAP.stats = { brushes: solid, dropped, faces, skipped, displacements, cells, teleports: tele };
+  MAP.stats = {
+    brushes: solid, dropped, cells, teleports: tele,
+    faces: surface.faces, skipped: surface.skipped,
+    displacements: surface.displacements, unlitFaces: surface.unlit,
+  };
 
-  // a map this size needs its fog and draw distance opened right up
+  /* ---------------- light it ----------------
+     The map arrives already lit: three megabytes of lightmap baked by the
+     author's own compiler, from the author's own 151 lamps. Re-deriving that
+     at runtime means fighting a problem that is already solved, and WebGL
+     will not shade a scene with 151 lights anyway. So the samples are read
+     straight out of the file and baked into the mesh, which is what the
+     engine it was made for does too. The sun still gets pointed the right way
+     for everything that is not the map surface. */
+  const { env } = bsp.lights();
+  if (env) {
+    setEnvironment({
+      dir: env.dir,
+      sunColor: env.sun, sunIntensity: Math.min(2.2, env.sun.i / 500),
+      ambientColor: env.ambient, ambientGround: 0x2f3646,
+      ambientIntensity: Math.min(0.9, env.ambient.i / 270),
+      shadows: false,                                 // no shadow map covers 30k units usefully
+    });
+  }
+
+  // a map this size needs its sky, fog and draw distance opened right up
   const span = Math.max(world.maxX - world.minX, world.maxZ - world.minZ);
-  scene.fog.near = span * 0.10;
-  scene.fog.far = span * 1.15;
+  const diag = Math.hypot(world.maxX - world.minX, world.maxY - world.minY, world.maxZ - world.minZ);
+  setSky({ ...SKY_DAY, radius: diag * 0.9 });
+  scene.fog.near = span * 0.22;
+  scene.fog.far = span * 1.5;
 
   return MAP;
 }
 
 /* ---------------- surface mesh ---------------- */
 
-/** Colour a face by how steep it is: ride-able, standable, or wall. */
-function addSurface(positions) {
+/**
+ * The map's own baked light, tinted by how steep each face is.
+ *
+ * Two jobs at once. The lightmap says how bright a point is, which is what
+ * makes the place look like itself; the tint says whether you can ride it,
+ * which is what makes it playable — thirty thousand units of one grey is
+ * unreadable at speed. Multiplying keeps both: a dark corner stays dark, and
+ * a ramp in it is still recognisably a ramp.
+ *
+ * Luxels are stored with a shared exponent and run well past 1.0, so they get
+ * an exposure and a gamma on the way to a screen colour.
+ */
+function addSurface(positions, light) {
   const n = positions.length / 9;
   const colors = new Float32Array(positions.length);
-  const c = new THREE.Color();
+
+  /* Vertex colours are in the renderer's working space and three.js converts
+     to sRGB on output, so no gamma is applied here — doing it as well was what
+     turned a map whose luxels average 0.20 into a white-out.
+     LIFT keeps the darkest 59% of the map off pure black, because a ramp you
+     cannot see is a ramp you cannot ride. */
+  const EXPOSURE = 1.15, LIFT = 0.05;
+  const tone = x => Math.min(1, LIFT + x * EXPOSURE);
+
   for (let t = 0; t < n; t++) {
     const o = t * 9;
-    const ax = positions[o], ay = positions[o + 1], az = positions[o + 2];
-    const bx = positions[o + 3], by = positions[o + 4], bz = positions[o + 5];
-    const cx = positions[o + 6], cy = positions[o + 7], cz = positions[o + 8];
-    const ux = bx - ax, uy = by - ay, uz = bz - az;
-    const vx = cx - ax, vy = cy - ay, vz = cz - az;
-    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const ux = positions[o + 3] - positions[o], uy = positions[o + 4] - positions[o + 1], uz = positions[o + 5] - positions[o + 2];
+    const vx = positions[o + 6] - positions[o], vy = positions[o + 7] - positions[o + 1], vz = positions[o + 8] - positions[o + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
     const L = Math.hypot(nx, ny, nz) || 1;
-    ny /= L;
+    const up = ny / L;
 
-    if (ny >= MOVE.walkableNormalY) c.setHex(0x2f3a5c);              // floor: you can stand here
-    else if (ny > 0.06) c.setHex(0x35e0c8);                          // a face you can ride
-    else if (ny > -0.3) c.setHex(0x141a30);                          // wall
-    else c.setHex(0x0d1124);                                         // ceiling
+    let ar, ag, ab;
+    if (up >= MOVE.walkableNormalY) { ar = 0.82; ag = 0.86; ab = 0.95; }        // floor
+    else if (up > 0.06) { ar = 0.30; ag = 1.00; ab = 0.90; }                    // a face you can ride
+    else if (up > -0.3) { ar = 0.80; ag = 0.82; ab = 0.90; }                    // wall
+    else { ar = 0.72; ag = 0.75; ab = 0.86; }                                   // ceiling
+
     for (let k = 0; k < 3; k++) {
-      colors[o + k * 3] = c.r; colors[o + k * 3 + 1] = c.g; colors[o + k * 3 + 2] = c.b;
+      const c = o + k * 3;
+      colors[c] = tone(light[c] * ar);
+      colors[c + 1] = tone(light[c + 1] * ag);
+      colors[c + 2] = tone(light[c + 2] * ab);
     }
   }
 
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  g.computeVertexNormals();
-  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
-    vertexColors: true, roughness: 0.85, metalness: 0.05, side: THREE.DoubleSide,
+  // the light is already in the colours, so the surface must not be lit again
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+    vertexColors: true, side: THREE.DoubleSide, fog: true,
   }));
   m.frustumCulled = false;
-  m.receiveShadow = true;
   mapGroup.add(m);
   return m;
 }

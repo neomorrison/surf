@@ -56,6 +56,25 @@ export const sky = new THREE.Mesh(new THREE.SphereGeometry(18000, 32, 20), skyMa
 sky.frustumCulled = false;
 scene.add(sky);
 
+/** Repaint the sky. Colours are hex; anything omitted is left alone. */
+export function setSky(o = {}) {
+  for (const k of ['top', 'mid', 'horizon', 'bottom']) {
+    if (o[k] != null) skyMat.uniforms[k].value.setHex(o[k]);
+  }
+  if (o.fog != null) scene.fog.color.setHex(o.fog);
+  if (o.radius != null) {
+    sky.geometry.dispose();
+    sky.geometry = new THREE.SphereGeometry(o.radius, 32, 20);
+    camera.far = Math.max(camera.far, o.radius * 2.2);
+    camera.updateProjectionMatrix();
+  }
+}
+
+/** A daylight sky, for a map that expects one. */
+export const SKY_DAY = { top: 0x1d4fa8, mid: 0x4a8fd6, horizon: 0xbcd8f0, bottom: 0x16233a, fog: 0x9dc0dd };
+/** The void this game's own courses hang in. */
+export const SKY_VOID = { top: 0x04061a, mid: 0x123a6e, horizon: 0x35e0c8, bottom: 0x04030c, fog: 0x060a1e };
+
 /* A slow starfield gives the void a parallax that a flat gradient cannot. */
 {
   const N = 900, pos = new Float32Array(N * 3);
@@ -75,7 +94,7 @@ scene.add(sky);
 }
 
 /* ---------------- lighting ---------------- */
-const hemi = new THREE.HemisphereLight(0x9fd8ff, 0x141033, 0.85); scene.add(hemi);
+export const hemi = new THREE.HemisphereLight(0x9fd8ff, 0x141033, 0.85); scene.add(hemi);
 
 export const sun = new THREE.DirectionalLight(0xfff0d8, 1.05);
 sun.position.set(-1800, 2800, 1200);
@@ -87,11 +106,43 @@ sun.shadow.camera.top = 2600; sun.shadow.camera.bottom = -2600;
 sun.shadow.bias = -0.0016;
 scene.add(sun); scene.add(sun.target);
 
-/** Keep the shadow frustum around the player — the course is far too long to cover at once. */
+/* Where the sun sits relative to the player, and how far the ambient reaches.
+   A loaded map overrides both from its own light_environment. */
+const sunOffset = { x: -1500, y: 2400, z: 1000 };
+
+/** Keep the shadow frustum around the player — a course is far too long to cover at once. */
 export function followSun(x, y, z) {
   sun.target.position.set(x, y, z);
-  sun.position.set(x - 1500, y + 2400, z + 1000);
+  sun.position.set(x + sunOffset.x, y + sunOffset.y, z + sunOffset.z);
   sun.target.updateMatrixWorld(); sun.updateMatrixWorld();
+}
+
+/**
+ * Point the sun and set the ambient, from a map's own light_environment.
+ * `dir` is the direction the light travels, so the sun goes the other way.
+ */
+export function setEnvironment(o = {}) {
+  if (o.dir) {
+    const L = Math.hypot(o.dir.x, o.dir.y, o.dir.z) || 1;
+    const d = 3000;
+    sunOffset.x = -o.dir.x / L * d;
+    sunOffset.y = -o.dir.y / L * d;
+    sunOffset.z = -o.dir.z / L * d;
+    if (sunOffset.y < 600) sunOffset.y = 600;         // never light from underneath
+  }
+  if (o.sunColor != null) sun.color.setRGB(o.sunColor.r, o.sunColor.g, o.sunColor.b);
+  if (o.sunIntensity != null) sun.intensity = o.sunIntensity;
+  if (o.ambientColor != null) hemi.color.setRGB(o.ambientColor.r, o.ambientColor.g, o.ambientColor.b);
+  if (o.ambientGround != null) hemi.groundColor.setHex(o.ambientGround);
+  if (o.ambientIntensity != null) hemi.intensity = o.ambientIntensity;
+  if (o.shadows != null) sun.castShadow = o.shadows;
+  if (o.shadowSpan != null) {
+    const s = o.shadowSpan;
+    sun.shadow.camera.left = -s; sun.shadow.camera.right = s;
+    sun.shadow.camera.top = s; sun.shadow.camera.bottom = -s;
+    sun.shadow.camera.far = s * 4;
+    sun.shadow.camera.updateProjectionMatrix();
+  }
 }
 
 export function setFov(deg) { camera.fov = deg; camera.updateProjectionMatrix(); }

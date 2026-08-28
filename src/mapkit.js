@@ -18,6 +18,7 @@ import {
 } from './world.js';
 import { trigger } from './physics.js';
 import { MOVE, RULES, slopeOf } from './config.js';
+import { setSky, setEnvironment, SKY_VOID } from './core.js';
 
 /**
  * The one live map. `buildMap()` repopulates this object in place rather than
@@ -26,6 +27,7 @@ import { MOVE, RULES, slopeOf } from './config.js';
 export const MAP = {
   id: "", name: "", blurb: "", prespeed: null,
   oneShot: false,                                       // course format, not a movement rule
+  onFrame: null,                                        // a loaded map lights itself
   spawn: { x: 0, y: 0, z: 0, yaw: 0 },
   checkpoints: [], stages: [], finishPad: null,
   route: [],                                            // ride-line waypoints, for the tests
@@ -59,6 +61,15 @@ export function beginMap(o) {
   MAP.checkpoints.length = 0; MAP.stages.length = 0; MAP.route.length = 0;
   MAP.finishPad = null; MAP.bounds = null;
   MAP.oneShot = !!o.oneShot;
+  MAP.onFrame = null;
+  /* Whatever the last course did to the sky and the sun, put them back. */
+  setSky({ ...SKY_VOID, radius: 18000 });
+  setEnvironment({
+    dir: { x: 1500, y: -2400, z: -1000 },
+    sunColor: { r: 1, g: 0.94, b: 0.85 }, sunIntensity: 1.05,
+    ambientColor: { r: 0.62, g: 0.85, b: 1 }, ambientGround: 0x141033,
+    ambientIntensity: 0.85, shadows: true, shadowSpan: 2600,
+  });
   MAP.prespeed = RULES.prespeedCap;
   cur.x = 0; cur.y = 0; cur.z = 0; cur.yaw = 0;
   stageIdx = 0; stageFloor = 0; stageColor = NEON.teal;

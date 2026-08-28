@@ -212,6 +212,8 @@ function frame(now) {
 
   const b = view.body;
   updateCamera(booted ? acc / TICK : 0, dt);
+  // a loaded map lights itself, from its own lamps
+  if (MAP.onFrame) MAP.onFrame(b.pos, dt);
   if (booted && !paused && !frozen && b.surfRamp) dropTrail(b.pos.x, b.pos.y, b.pos.z, dt);
   updateFx(dt);
 

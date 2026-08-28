@@ -16,7 +16,7 @@
 const HEADER = 1036;                    // ident + version + 64 lumps + revision
 
 export const LUMP = {
-  ENTITIES: 0, PLANES: 1, TEXDATA: 2, VERTEXES: 3, TEXINFO: 6, FACES: 7,
+  ENTITIES: 0, PLANES: 1, TEXDATA: 2, VERTEXES: 3, TEXINFO: 6, FACES: 7, LIGHTING: 8,
   EDGES: 12, SURFEDGES: 13, MODELS: 14, BRUSHES: 18, BRUSHSIDES: 19,
   DISPINFO: 26, TEXDATA_STRING_DATA: 43, TEXDATA_STRING_TABLE: 44,
 };
@@ -82,6 +82,47 @@ class Bsp {
       out.push(kv);
     }
     return out;
+  }
+
+  /**
+   * The map's own lighting, straight out of the entity lump.
+   *
+   * A surf map is lit by its author, and guessing where to put lamps in
+   * thirty thousand units of geometry is a losing game when the file already
+   * says. Source angles are (pitch, yaw, roll) with pitch measured downward,
+   * and light_environment's own `pitch` key overrides the one in `angles`.
+   */
+  lights() {
+    const rgbi = (str, fallback = 200) => {
+      const p = (str || '').trim().split(/\s+/).map(Number);
+      const i = p.length > 3 && Number.isFinite(p[3]) ? p[3] : fallback;
+      return { r: (p[0] || 0) / 255, g: (p[1] || 0) / 255, b: (p[2] || 0) / 255, i };
+    };
+    const points = [];
+    let env = null;
+    for (const e of this.entities()) {
+      if (e.classname === 'light' && e.pos) {
+        const c = rgbi(e._light);
+        points.push({
+          pos: e.pos, r: c.r, g: c.g, b: c.b, i: c.i,
+          constant: +(e._constant_attn || 0), linear: +(e._linear_attn || 0),
+          quadratic: +(e._quadratic_attn || 0),
+        });
+      } else if (e.classname === 'light_environment') {
+        const sun = rgbi(e._light, 300), amb = rgbi(e._ambient, 100);
+        const a = (e.angles || '0 0 0').trim().split(/\s+/).map(Number);
+        const pitch = (e.pitch != null ? +e.pitch : a[0]) * Math.PI / 180;
+        const yaw = a[1] * Math.PI / 180;
+        // Source direction, then rotated into Y-up. This is the way the light
+        // travels, so the sun itself sits opposite it.
+        const cp = Math.cos(pitch);
+        env = {
+          dir: toY(Math.cos(yaw) * cp, Math.sin(yaw) * cp, Math.sin(pitch)),
+          sun, ambient: amb,
+        };
+      }
+    }
+    return { points, env };
   }
 
   /* ---------------- geometry ---------------- */
@@ -173,16 +214,20 @@ class Bsp {
   faces() {
     const vl = this.lump(LUMP.VERTEXES), el = this.lump(LUMP.EDGES);
     const sl = this.lump(LUMP.SURFEDGES), fl = this.lump(LUMP.FACES);
+    const til = this.lump(LUMP.TEXINFO), lml = this.lump(LUMP.LIGHTING);
     const tex = this.textureNames();
+    const bytes = new Uint8Array(this.buffer);
 
+    /* Vertices are kept in both frames: Y-up to draw with, and Source to look
+       lighting up with, because a face's lightmap vectors are expressed in the
+       coordinates the map was compiled in. */
     const nVerts = this.count(LUMP.VERTEXES, 12);
-    const vx = new Float32Array(nVerts), vy = new Float32Array(nVerts), vz = new Float32Array(nVerts);
+    const sx = new Float32Array(nVerts), sy = new Float32Array(nVerts), sz = new Float32Array(nVerts);
     for (let i = 0; i < nVerts; i++) {
       const o = vl.ofs + i * 12;
-      const x = this.dv.getFloat32(o, true);
-      const y = this.dv.getFloat32(o + 4, true);
-      const z = this.dv.getFloat32(o + 8, true);
-      vx[i] = x; vy[i] = z; vz[i] = -y;                 // to Y-up
+      sx[i] = this.dv.getFloat32(o, true);
+      sy[i] = this.dv.getFloat32(o + 4, true);
+      sz[i] = this.dv.getFloat32(o + 8, true);
     }
     const nEdges = this.count(LUMP.EDGES, 4);
     const e0 = new Uint16Array(nEdges), e1 = new Uint16Array(nEdges);
@@ -194,38 +239,69 @@ class Bsp {
     const surf = new Int32Array(nSurf);
     for (let i = 0; i < nSurf; i++) surf[i] = this.dv.getInt32(sl.ofs + i * 4, true);
 
-    const pos = [];
+    /* A luxel is stored as RGB plus a shared exponent, so the baked range goes
+       far above 1.0; the tone map at the end is what brings it back. */
+    const sample = (ofs, w, h, s, t) => {
+      const si = Math.max(0, Math.min(w - 1, Math.round(s)));
+      const ti = Math.max(0, Math.min(h - 1, Math.round(t)));
+      const o = lml.ofs + ofs + (ti * w + si) * 4;
+      if (ofs < 0 || o + 3 >= lml.ofs + lml.len) return null;
+      const e = Math.pow(2, (bytes[o + 3] << 24) >> 24) / 255;
+      return { r: bytes[o] * e, g: bytes[o + 1] * e, b: bytes[o + 2] * e };
+    };
+
+    const pos = [], col = [];
     const nFaces = this.count(LUMP.FACES, 56);
-    let skipped = 0, disp = 0;
+    let skipped = 0, disp = 0, unlit = 0;
     for (let i = 0; i < nFaces; i++) {
       const o = fl.ofs + i * 56;
       const firstedge = this.dv.getInt32(o + 4, true);
       const numedges = this.dv.getInt16(o + 8, true);
       const texinfo = this.dv.getInt16(o + 10, true);
       const dispinfo = this.dv.getInt16(o + 12, true);
+      const lightofs = this.dv.getInt32(o + 20, true);
+      const minS = this.dv.getInt32(o + 28, true), minT = this.dv.getInt32(o + 32, true);
+      const sizeS = this.dv.getInt32(o + 36, true), sizeT = this.dv.getInt32(o + 40, true);
       if (dispinfo >= 0) disp++;
       const t = tex[texinfo];
       if (!t || (t.flags & INVISIBLE)) { skipped++; continue; }
       if (numedges < 3) continue;
+
+      const lw = sizeS + 1, lh = sizeT + 1;
+      const to = til.ofs + texinfo * 72;
+      const lv = k => this.dv.getFloat32(to + 32 + k * 4, true);   // lightmapVecs
+      const hasLight = lightofs >= 0 && lw > 0 && lh > 0;
+      if (!hasLight) unlit++;
 
       const ring = [];
       for (let k = 0; k < numedges; k++) {
         const se = surf[firstedge + k];
         ring.push(se >= 0 ? e0[se] : e1[-se]);
       }
+      const litOf = v => {
+        if (!hasLight) return { r: 0.35, g: 0.35, b: 0.38 };
+        const s = lv(0) * sx[v] + lv(1) * sy[v] + lv(2) * sz[v] + lv(3) - minS;
+        const tt = lv(4) * sx[v] + lv(5) * sy[v] + lv(6) * sz[v] + lv(7) - minT;
+        return sample(lightofs, lw, lh, s, tt) || { r: 0.35, g: 0.35, b: 0.38 };
+      };
       for (let k = 1; k < ring.length - 1; k++) {
         for (const v of [ring[0], ring[k], ring[k + 1]]) {
-          pos.push(vx[v], vy[v], vz[v]);
+          pos.push(sx[v], sz[v], -sy[v]);               // to Y-up
+          const c = litOf(v);
+          col.push(c.r, c.g, c.b);
         }
       }
     }
-    return { positions: new Float32Array(pos), faces: nFaces, skipped, displacements: disp };
+    return {
+      positions: new Float32Array(pos), light: new Float32Array(col),
+      faces: nFaces, skipped, displacements: disp, unlit,
+    };
   }
 
   /**
    * Every model's bounding box, in Y-up. Model 0 is the world; the rest are
-   * brush entities, and a trigger's box is how you find out where its volume
-   * is without walking the BSP tree for it.
+   * brush entities, and a trigger's box is how you find where its volume is
+   * without walking the BSP tree for it.
    */
   models() {
     const l = this.lump(LUMP.MODELS), n = this.count(LUMP.MODELS, 48), out = new Array(n);

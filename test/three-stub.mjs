@@ -8,7 +8,14 @@ class V3 {
   clone() { return new V3(this.x, this.y, this.z); }
 }
 class Euler extends V3 { }
-class Color { constructor(c) { this.c = c >>> 0; } getHexString() { return (this.c >>> 0).toString(16).padStart(6, '0'); } }
+class Color {
+  constructor(c) { this.c = (c || 0) >>> 0; this.r = 1; this.g = 1; this.b = 1; }
+  setHex(c) { this.c = (c || 0) >>> 0; return this; }
+  getHex() { return this.c; }
+  setRGB(r, g, b) { this.r = r; this.g = g; this.b = b; return this; }
+  copy(o) { this.c = o.c; this.r = o.r; this.g = o.g; this.b = o.b; return this; }
+  getHexString() { return (this.c >>> 0).toString(16).padStart(6, '0'); }
+}
 class Obj3D {
   constructor() { this.position = new V3(); this.rotation = new Euler(); this.scale = new V3(1, 1, 1); this.children = []; this.visible = true; }
   add(...o) { for (const c of o) if (c) this.children.push(c); return this; }
@@ -35,7 +42,16 @@ class BufferAttribute {
   setZ(i, v) { this.array[i * this.itemSize + 2] = v; }
 }
 class Material { constructor(o = {}) { Object.assign(this, o); } dispose() {} }
-class Light extends Obj3D { constructor(...a) { super(); this.args = a; this.shadow = { mapSize: { set() {} }, camera: {}, bias: 0 }; this.target = new Obj3D(); } }
+class Light extends Obj3D {
+  constructor(...a) {
+    super();
+    this.args = a; this.intensity = a[a.length - 1] || 1;
+    this.color = new Color(a[0]); this.groundColor = new Color(a[1]);
+    this.castShadow = false;
+    this.shadow = { mapSize: { set() {} }, camera: { updateProjectionMatrix() {} }, bias: 0 };
+    this.target = new Obj3D();
+  }
+}
 
 const three = {
   Scene: class extends Obj3D { }, Group: class extends Obj3D { }, Mesh: class extends Obj3D { constructor(g, m) { super(); this.geometry = g; this.material = m; } },
@@ -52,7 +68,7 @@ const three = {
   CanvasTexture: class { constructor() { this.needsUpdate = false; this.wrapS = 0; this.wrapT = 0; this.anisotropy = 1; } },
   RepeatWrapping: 1000,
   HemisphereLight: Light, DirectionalLight: Light, PointLight: Light,
-  Vector3: V3, Color, Fog: class { constructor(c, n, f) { Object.assign(this, { c, n, f }); } },
+  Vector3: V3, Color, Fog: class { constructor(c, n, f) { this.color = new Color(c); this.near = n; this.far = f; } },
   DoubleSide: 2, BackSide: 1, FrontSide: 0, PCFSoftShadowMap: 2,
   MathUtils: { clamp: (v, a, b) => v < a ? a : v > b ? b : v },
 };
