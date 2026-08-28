@@ -172,6 +172,9 @@
   .keys b { color:#e6ecff; display:inline-block; min-width:112px; }
   .legal { font-size:11px; color:#4d5678; margin-top:18px; line-height:1.6; }
   /* A surf ramp is held with a mouse. Say so rather than letting a phone find out. */
+  #bootError { display:none; margin-top:14px; padding:11px 14px; border-radius:9px;
+    background:#2a1220; border:1px solid #52233a; color:#ffb0c6; font-size:12.5px; line-height:1.5;
+    font-family:"SFMono-Regular",Consolas,monospace; text-align:left; }
   #touchNote { display:none; margin-top:16px; padding:10px 14px; border-radius:9px;
     background:#2a1220; border:1px solid #52233a; color:#ffb0c6; font-size:12.5px; line-height:1.5; }
   @media (pointer: coarse) { #touchNote { display:block; } }
@@ -317,6 +320,7 @@
     a few degrees at a time while holding a strafe key — there is no touch control that can stand in for it.</div>
 
   <div style="margin-top:22px"><button id="playBtn" class="btn primary" disabled>Loading…</button></div>
+  <div id="bootError"></div>
   <div class="legal">
     Original game. The movement reproduces the Source-engine model — friction, ground acceleration, the
     45.6&deg; standable-surface threshold and the 30&nbsp;u/s air wish-speed cap — from public documentation.
@@ -372,6 +376,39 @@
   <h2 id="recordsTitle">records</h2>
   <div id="recordsBody" class="muted"></div>
 </div></div>
+
+<script>
+  /* If a module fails to load, the PLAY button sits on "Loading..." for ever
+     and says nothing about why. Usually it is a stale cached module pinning an
+     old copy in the registry. Say so, on screen, instead of hanging. */
+  (function () {
+    var shown = false;
+    function report(what) {
+      if (shown) return; shown = true;
+      var b = document.getElementById('playBtn');
+      if (b) { b.textContent = 'FAILED TO LOAD'; b.disabled = true; }
+      var box = document.getElementById('bootError');
+      if (box) {
+        box.style.display = 'block';
+        box.textContent = what + '  —  this is usually a stale cached module: '
+          + 'hard-reload with Cmd+Shift+R (or Ctrl+Shift+R) and it should clear.';
+      }
+    }
+    addEventListener('error', function (e) {
+      if (e.target && e.target.tagName === 'SCRIPT') report('a script failed to load');
+      else if (e.message) report(e.message);
+    }, true);
+    addEventListener('unhandledrejection', function (e) {
+      report((e.reason && e.reason.message) || String(e.reason));
+    });
+    addEventListener('load', function () {
+      setTimeout(function () {
+        var b = document.getElementById('playBtn');
+        if (b && b.disabled && b.textContent === 'Loading\u2026') report('the game did not finish starting');
+      }, 6000);
+    });
+  })();
+</script>
 
 <script type="importmap">
 { "imports": {

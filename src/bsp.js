@@ -18,7 +18,7 @@ const HEADER = 1036;                    // ident + version + 64 lumps + revision
 export const LUMP = {
   ENTITIES: 0, PLANES: 1, TEXDATA: 2, VERTEXES: 3, TEXINFO: 6, FACES: 7, LIGHTING: 8,
   EDGES: 12, SURFEDGES: 13, MODELS: 14, BRUSHES: 18, BRUSHSIDES: 19,
-  DISPINFO: 26, TEXDATA_STRING_DATA: 43, TEXDATA_STRING_TABLE: 44,
+  DISPINFO: 26, PAKFILE: 40, TEXDATA_STRING_DATA: 43, TEXDATA_STRING_TABLE: 44,
 };
 
 /* brush contents */
@@ -125,6 +125,51 @@ class Bsp {
     return { points, env };
   }
 
+  /**
+   * The embedded pakfile, as name -> bytes.
+   *
+   * A .bsp carries a zip of everything the map needs that the game does not
+   * already have. On a well-packed map that is all of it, which is why the
+   * map works on a server that has never seen it — and why it can be textured
+   * here with no game install at all. Entries in a bsp pakfile are stored,
+   * not deflated, so this only has to walk the central directory and slice.
+   */
+  pakfile() {
+    const l = this.lump(LUMP.PAKFILE);
+    const files = new Map();
+    if (!l.len) return files;
+    const bytes = new Uint8Array(this.buffer, l.ofs, l.len);
+    const dv = new DataView(this.buffer, l.ofs, l.len);
+
+    // end of central directory, searched from the back past any comment
+    let eocd = -1;
+    for (let i = l.len - 22; i >= 0 && i > l.len - 22 - 65536; i--) {
+      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) return files;
+
+    let p = dv.getUint32(eocd + 16, true);
+    const count = dv.getUint16(eocd + 10, true);
+    const dec = new TextDecoder('latin1');
+    for (let i = 0; i < count && p + 46 <= l.len; i++) {
+      if (dv.getUint32(p, true) !== 0x02014b50) break;
+      const method = dv.getUint16(p + 10, true);
+      const size = dv.getUint32(p + 20, true);
+      const nameLen = dv.getUint16(p + 28, true);
+      const extraLen = dv.getUint16(p + 30, true);
+      const commentLen = dv.getUint16(p + 32, true);
+      const local = dv.getUint32(p + 42, true);
+      const name = dec.decode(bytes.subarray(p + 46, p + 46 + nameLen));
+      p += 46 + nameLen + extraLen + commentLen;
+      if (method !== 0) continue;                     // stored only; nothing here is deflated
+      const lnLen = dv.getUint16(local + 26, true);
+      const leLen = dv.getUint16(local + 28, true);
+      const start = local + 30 + lnLen + leLen;
+      files.set(name.toLowerCase().replace(/\\/g, '/'), bytes.subarray(start, start + size));
+    }
+    return files;
+  }
+
   /* ---------------- geometry ---------------- */
 
   planes() {
@@ -211,7 +256,18 @@ class Bsp {
    * edge indices are signed: the sign says which way round to read the edge,
    * which is how a face knows its own winding.
    */
-  faces() {
+  /**
+   * The visible surface, grouped by material.
+   *
+   * Faces are stored as a ring of edges, not triangles, and the edge indices
+   * are signed: the sign says which way round to read the edge, which is how a
+   * face knows its winding. Each vertex comes out with three things — where it
+   * is, how bright it is, and where it sits on its texture.
+   *
+   * `sizeOf(material)` supplies texture dimensions, because a face's texture
+   * vectors are in texels and mean nothing without them.
+   */
+  faces(sizeOf) {
     const vl = this.lump(LUMP.VERTEXES), el = this.lump(LUMP.EDGES);
     const sl = this.lump(LUMP.SURFEDGES), fl = this.lump(LUMP.FACES);
     const til = this.lump(LUMP.TEXINFO), lml = this.lump(LUMP.LIGHTING);
@@ -219,8 +275,8 @@ class Bsp {
     const bytes = new Uint8Array(this.buffer);
 
     /* Vertices are kept in both frames: Y-up to draw with, and Source to look
-       lighting up with, because a face's lightmap vectors are expressed in the
-       coordinates the map was compiled in. */
+       lighting and texturing up with, because a face's lightmap and texture
+       vectors are in the coordinates the map was compiled in. */
     const nVerts = this.count(LUMP.VERTEXES, 12);
     const sx = new Float32Array(nVerts), sy = new Float32Array(nVerts), sz = new Float32Array(nVerts);
     for (let i = 0; i < nVerts; i++) {
@@ -239,8 +295,7 @@ class Bsp {
     const surf = new Int32Array(nSurf);
     for (let i = 0; i < nSurf; i++) surf[i] = this.dv.getInt32(sl.ofs + i * 4, true);
 
-    /* A luxel is stored as RGB plus a shared exponent, so the baked range goes
-       far above 1.0; the tone map at the end is what brings it back. */
+    /* A luxel is RGB plus a shared exponent, so baked light runs past 1.0. */
     const sample = (ofs, w, h, s, t) => {
       const si = Math.max(0, Math.min(w - 1, Math.round(s)));
       const ti = Math.max(0, Math.min(h - 1, Math.round(t)));
@@ -250,9 +305,10 @@ class Bsp {
       return { r: bytes[o] * e, g: bytes[o + 1] * e, b: bytes[o + 2] * e };
     };
 
-    const pos = [], col = [];
+    const groups = new Map();
     const nFaces = this.count(LUMP.FACES, 56);
-    let skipped = 0, disp = 0, unlit = 0;
+    let skipped = 0, disp = 0, unlit = 0, drawn = 0;
+
     for (let i = 0; i < nFaces; i++) {
       const o = fl.ofs + i * 56;
       const firstedge = this.dv.getInt32(o + 4, true);
@@ -266,36 +322,44 @@ class Bsp {
       const t = tex[texinfo];
       if (!t || (t.flags & INVISIBLE)) { skipped++; continue; }
       if (numedges < 3) continue;
+      drawn++;
 
-      const lw = sizeS + 1, lh = sizeT + 1;
       const to = til.ofs + texinfo * 72;
-      const lv = k => this.dv.getFloat32(to + 32 + k * 4, true);   // lightmapVecs
+      const tv = k => this.dv.getFloat32(to + k * 4, true);            // textureVecs
+      const lv = k => this.dv.getFloat32(to + 32 + k * 4, true);       // lightmapVecs
+      const lw = sizeS + 1, lh = sizeT + 1;
       const hasLight = lightofs >= 0 && lw > 0 && lh > 0;
       if (!hasLight) unlit++;
+      const dim = (sizeOf && sizeOf(t.name)) || { w: 512, h: 512 };
+
+      let g = groups.get(t.name);
+      if (!g) groups.set(t.name, g = { material: t.name, pos: [], light: [], uv: [] });
 
       const ring = [];
       for (let k = 0; k < numedges; k++) {
         const se = surf[firstedge + k];
         ring.push(se >= 0 ? e0[se] : e1[-se]);
       }
-      const litOf = v => {
-        if (!hasLight) return { r: 0.35, g: 0.35, b: 0.38 };
-        const s = lv(0) * sx[v] + lv(1) * sy[v] + lv(2) * sz[v] + lv(3) - minS;
-        const tt = lv(4) * sx[v] + lv(5) * sy[v] + lv(6) * sz[v] + lv(7) - minT;
-        return sample(lightofs, lw, lh, s, tt) || { r: 0.35, g: 0.35, b: 0.38 };
+      const emit = v => {
+        g.pos.push(sx[v], sz[v], -sy[v]);                              // to Y-up
+        const c = hasLight
+          ? (sample(lightofs, lw, lh,
+              lv(0) * sx[v] + lv(1) * sy[v] + lv(2) * sz[v] + lv(3) - minS,
+              lv(4) * sx[v] + lv(5) * sy[v] + lv(6) * sz[v] + lv(7) - minT)
+             || { r: 0.35, g: 0.35, b: 0.38 })
+          : { r: 0.35, g: 0.35, b: 0.38 };
+        g.light.push(c.r, c.g, c.b);
+        g.uv.push(
+          (tv(0) * sx[v] + tv(1) * sy[v] + tv(2) * sz[v] + tv(3)) / dim.w,
+          -(tv(4) * sx[v] + tv(5) * sy[v] + tv(6) * sz[v] + tv(7)) / dim.h,
+        );
       };
       for (let k = 1; k < ring.length - 1; k++) {
-        for (const v of [ring[0], ring[k], ring[k + 1]]) {
-          pos.push(sx[v], sz[v], -sy[v]);               // to Y-up
-          const c = litOf(v);
-          col.push(c.r, c.g, c.b);
-        }
+        emit(ring[0]); emit(ring[k]); emit(ring[k + 1]);
       }
     }
-    return {
-      positions: new Float32Array(pos), light: new Float32Array(col),
-      faces: nFaces, skipped, displacements: disp, unlit,
-    };
+
+    return { groups: [...groups.values()], faces: nFaces, drawn, skipped, displacements: disp, unlit };
   }
 
   /**

@@ -12,12 +12,13 @@
    unreadable, and the one thing you need to see from a long way off is which
    surfaces you can ride.                                                    */
 import * as THREE from 'three';
-import { scene, setSky, setEnvironment, SKY_DAY } from '../core.js';
+import { scene, renderer, setSky, setEnvironment, SKY_DAY } from '../core.js';
 import { MAP, beginMap, endMap, mark } from '../mapkit.js';
 import { mapGroup, NEON } from '../world.js';
 import { brush, trigger, buildBrushGrid, BRUSHES } from '../physics.js';
 import { MOVE } from '../config.js';
 import { readBsp } from '../bsp.js';
+import { resolveTexture, parseVtf, makeTexture } from '../vtf.js';
 
 /** Source yaw (degrees, +X at 0, counter-clockwise) -> this game's view yaw. */
 function viewYawFromSource(deg) {
@@ -102,9 +103,13 @@ export function buildFromBsp(bsp, meta) {
   }
   const cells = buildBrushGrid(512);
 
-  /* ---------------- what you see ---------------- */
-  const surface = bsp.faces();
-  addSurface(surface.positions, surface.light);
+  /* ---------------- what you see ----------------
+     Materials resolve lazily: faces() asks for a texture's dimensions as it
+     meets each one, which is also when it is worth loading. */
+  const lib = materialLibrary(bsp);
+  const surface = bsp.faces(name => lib.size(name));
+  let textured = 0;
+  for (const g of surface.groups) if (addGroup(g, lib)) textured++;
 
   /* ---------------- the run ---------------- */
   MAP.stages.push({ i: 0, name: 'START', hint: '', color: NEON.lime, floorY: world.minY - 4000 });
@@ -152,8 +157,9 @@ export function buildFromBsp(bsp, meta) {
   MAP.bounds = world;
   MAP.stats = {
     brushes: solid, dropped, cells, teleports: tele,
-    faces: surface.faces, skipped: surface.skipped,
+    faces: surface.faces, drawn: surface.drawn, skipped: surface.skipped,
     displacements: surface.displacements, unlitFaces: surface.unlit,
+    materials: surface.groups.length, textured,
   };
 
   /* ---------------- light it ----------------
@@ -187,62 +193,97 @@ export function buildFromBsp(bsp, meta) {
 
 /* ---------------- surface mesh ---------------- */
 
+/* ---------------- materials ---------------- */
+
 /**
- * The map's own baked light, tinted by how steep each face is.
+ * Materials, resolved out of the map's own pakfile and cached.
  *
- * Two jobs at once. The lightmap says how bright a point is, which is what
- * makes the place look like itself; the tint says whether you can ride it,
- * which is what makes it playable — thirty thousand units of one grey is
- * unreadable at speed. Multiplying keeps both: a dark corner stays dark, and
- * a ramp in it is still recognisably a ramp.
- *
- * Luxels are stored with a shared exponent and run well past 1.0, so they get
- * an exposure and a gamma on the way to a screen colour.
+ * A well-packed map carries every texture it uses, which is why it runs on a
+ * server that has never seen it — and why this needs no game install. Each
+ * name is followed through its patch/include chain to a .vtf, which is handed
+ * to the GPU as DXT blocks without being decoded.
  */
-function addSurface(positions, light) {
-  const n = positions.length / 9;
-  const colors = new Float32Array(positions.length);
+function materialLibrary(bsp) {
+  const pak = bsp.pakfile();
+  const s3tc = !!(renderer.extensions && renderer.extensions.has('WEBGL_compressed_texture_s3tc'));
+  const cache = new Map();
 
-  /* Vertex colours are in the renderer's working space and three.js converts
-     to sRGB on output, so no gamma is applied here — doing it as well was what
-     turned a map whose luxels average 0.20 into a white-out.
-     LIFT keeps the darkest 59% of the map off pure black, because a ramp you
-     cannot see is a ramp you cannot ride. */
-  const EXPOSURE = 1.15, LIFT = 0.05;
-  const tone = x => Math.min(1, LIFT + x * EXPOSURE);
+  function load(name) {
+    if (cache.has(name)) return cache.get(name);
+    let entry = { texture: null, color: null, size: { w: 512, h: 512 }, translucent: false };
+    const res = resolveTexture(pak, name);
+    if (res) {
+      const raw = pak.get(res.path);
+      const vtf = raw && parseVtf(raw);
+      if (vtf) {
+        const { texture, color } = makeTexture(vtf, s3tc);
+        entry = { texture, color, size: { w: vtf.width, h: vtf.height }, translucent: res.translucent };
+      }
+    }
+    cache.set(name, entry);
+    return entry;
+  }
 
-  for (let t = 0; t < n; t++) {
+  return { load, size: name => load(name).size, s3tc };
+}
+
+/* ---------------- surface mesh ---------------- */
+
+/**
+ * One mesh per material: texture times the map's own baked light.
+ *
+ * The lightmap goes in as vertex colour, which three multiplies against the
+ * texture — the same thing Source does, and the reason a dark corner stays
+ * dark under a bright texture. Vertex colours are in the renderer's working
+ * space and it converts to sRGB on output, so no gamma is applied here;
+ * doing it as well was what turned a map averaging 0.2 into a white-out.
+ *
+ * Surfable faces keep a slight lift so they still read at speed, but it is a
+ * tint on the real surface now rather than a colour instead of one.
+ */
+const EXPOSURE = 1.25, LIFT = 0.06;
+
+function addGroup(g, lib) {
+  const count = g.pos.length / 3;
+  if (!count) return false;
+  const mat = lib.load(g.material);
+
+  const positions = new Float32Array(g.pos);
+  const colors = new Float32Array(g.pos.length);
+  const uvs = new Float32Array(g.uv);
+
+  for (let t = 0; t < count / 3; t++) {
     const o = t * 9;
     const ux = positions[o + 3] - positions[o], uy = positions[o + 4] - positions[o + 1], uz = positions[o + 5] - positions[o + 2];
     const vx = positions[o + 6] - positions[o], vy = positions[o + 7] - positions[o + 1], vz = positions[o + 8] - positions[o + 2];
     const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-    const L = Math.hypot(nx, ny, nz) || 1;
-    const up = ny / L;
-
-    let ar, ag, ab;
-    if (up >= MOVE.walkableNormalY) { ar = 0.82; ag = 0.86; ab = 0.95; }        // floor
-    else if (up > 0.06) { ar = 0.30; ag = 1.00; ab = 0.90; }                    // a face you can ride
-    else if (up > -0.3) { ar = 0.80; ag = 0.82; ab = 0.90; }                    // wall
-    else { ar = 0.72; ag = 0.75; ab = 0.86; }                                   // ceiling
+    const up = ny / (Math.hypot(nx, ny, nz) || 1);
+    const ride = up > 0.06 && up < MOVE.walkableNormalY;
 
     for (let k = 0; k < 3; k++) {
       const c = o + k * 3;
-      colors[c] = tone(light[c] * ar);
-      colors[c + 1] = tone(light[c + 1] * ag);
-      colors[c + 2] = tone(light[c + 2] * ab);
+      const lift = mat.texture ? 1 : 1.15;             // untextured faces need a little help
+      let r = LIFT + g.light[c] * EXPOSURE * lift;
+      let gg = LIFT + g.light[c + 1] * EXPOSURE * lift;
+      let b = LIFT + g.light[c + 2] * EXPOSURE * lift;
+      if (ride) { r *= 0.72; gg *= 1.18; b *= 1.10; }  // a surfable face, still readable at speed
+      if (!mat.texture && mat.color) { r *= mat.color.r; gg *= mat.color.g; b *= mat.color.b; }
+      colors[c] = Math.min(1, r); colors[c + 1] = Math.min(1, gg); colors[c + 2] = Math.min(1, b);
     }
   }
 
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  // the light is already in the colours, so the surface must not be lit again
-  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
-    vertexColors: true, side: THREE.DoubleSide, fog: true,
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  if (mat.texture) geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+
+  const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    map: mat.texture || null, vertexColors: true, side: THREE.DoubleSide, fog: true,
+    transparent: !!mat.translucent, alphaTest: mat.translucent ? 0.5 : 0,
   }));
   m.frustumCulled = false;
   mapGroup.add(m);
-  return m;
+  return !!mat.texture;
 }
 
 /** A registry entry for a .bsp sitting in local/maps/. */
