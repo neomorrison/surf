@@ -40,11 +40,18 @@ const ghostPos = { x: 0, y: 0, z: 0 };
 /* ============================== triggers ============================== */
 
 const hits = [];
+let teleported = false;
+
 function handleTriggers() {
   const b = view.body;
   triggersAt(b.pos, MOVE.radius, b.hullHeight, hits);
   const now = new Set(hits);
-  for (const t of hits) if (!inside.has(t)) fire(t);      // enter-edge only
+  teleported = false;
+  for (const t of hits) {
+    if (inside.has(t)) continue;                         // enter-edge only
+    fire(t);
+    if (teleported) return;                              // we are somewhere else now
+  }
   for (const t of [...inside]) if (!now.has(t)) inside.delete(t);
   for (const t of hits) inside.add(t);
 }
@@ -86,6 +93,18 @@ function fire(t) {
       document.exitPointerLock();
       setSuspended(true);
       frozen = true;            // the run is over: stop simulating behind the panel
+      break;
+    }
+    case "teleport": {
+      /* The map's own answer to coming off a ramp, and to finishing a stage.
+         Velocity is dropped because that is what a surf map's reset expects;
+         the clock keeps running, which is what a timer does. */
+      spawnAt({ x: t.tx, y: t.ty, z: t.tz, yaw: t.tyaw });
+      inside.clear();
+      fxFall(b.pos.x, b.pos.y, b.pos.z);
+      sfxPad();
+      centerMessage("TELEPORT", "", 1.0, "#49c8ff");
+      teleported = true;
       break;
     }
     case "jumppad": {

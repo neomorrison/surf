@@ -147,16 +147,37 @@ export function buildFromBsp(bsp, meta) {
     MAP.finishPad = { x: c.x, y: endBox.minY, z: c.z };
   }
 
-  /* Every teleport in a surf map is there to catch you when you come off. The
-     map's own answer is to put you back at the stage start; this game's is a
-     fall, which on a one-shot course is the same sentence. */
-  let tele = 0;
+  /* A trigger_teleport is not a death, and treating it as one was wrong.
+     Surf maps use them for two opposite jobs: catching you when you come off
+     the ramp and putting you back at the stage start, and moving you *forward*
+     between stages. Across these six maps 231 of 232 have a real destination
+     and eleven of them send you downward, so calling them all falls turned
+     every long tunnel descent into a phantom death. Now they teleport, which
+     is what they say they do, and the map's own logic decides what that means. */
+  const dests = new Map();
+  for (const e of ents) {
+    if (e.classname === 'info_teleport_destination' && e.targetname && e.pos) {
+      dests.set(e.targetname.toLowerCase(), e);
+    }
+  }
+  let tele = 0, pits = 0;
   for (const e of ents) {
     if (e.classname !== 'trigger_teleport') continue;
     const m = entityBox(models, e);
     if (!m) continue;
-    zone(m, { kind: 'kill' });
-    tele++;
+    const d = e.target && dests.get(e.target.toLowerCase());
+    if (d) {
+      zone(m, {
+        kind: 'teleport',
+        tx: d.pos.x, ty: d.pos.y, tz: d.pos.z,
+        tyaw: viewYawFromSource(+(d.angles || '0 0 0').trim().split(/\s+/)[1]),
+      });
+      tele++;
+    } else {
+      // no destination to go to: the only thing it can be is a pit
+      zone(m, { kind: 'kill' });
+      pits++;
+    }
   }
 
   /* The prespeed zone is the start zone: that is what it is on a real server. */
@@ -176,7 +197,7 @@ export function buildFromBsp(bsp, meta) {
   endMap();
   MAP.bounds = world;
   MAP.stats = {
-    brushes: solid, dropped, cells, teleports: tele,
+    brushes: solid, dropped, cells, teleports: tele, pits,
     startZone: zones.startName || (startBox ? 'nearest spawn' : 'none'),
     endZone: zones.endName || (endBox ? 'furthest zone' : 'none'),
     timed: !!(startBox && endBox),
