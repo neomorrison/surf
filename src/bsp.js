@@ -18,7 +18,7 @@ const HEADER = 1036;                    // ident + version + 64 lumps + revision
 export const LUMP = {
   ENTITIES: 0, PLANES: 1, TEXDATA: 2, VERTEXES: 3, TEXINFO: 6, FACES: 7, LIGHTING: 8,
   EDGES: 12, SURFEDGES: 13, MODELS: 14, BRUSHES: 18, BRUSHSIDES: 19,
-  DISPINFO: 26, PAKFILE: 40, TEXDATA_STRING_DATA: 43, TEXDATA_STRING_TABLE: 44,
+  DISPINFO: 26, DISP_VERTS: 33, PAKFILE: 40, TEXDATA_STRING_DATA: 43, TEXDATA_STRING_TABLE: 44,
 };
 
 /* brush contents */
@@ -360,6 +360,164 @@ class Bsp {
     }
 
     return { groups: [...groups.values()], faces: nFaces, drawn, skipped, displacements: disp, unlit };
+  }
+
+  /**
+   * Displacement surfaces, as triangles grouped by material.
+   *
+   * A displacement is a quad face subdivided into a (2^power + 1) grid, with
+   * every grid point pushed along its own stored vector. It is how a mapper
+   * makes terrain, and on maps built that way it is not decoration — it is the
+   * surface you ride, so it has to exist for collision as much as for the eye.
+   * The base face contributes its corners, texture vectors and lightmap; the
+   * DISP_VERTS lump contributes the displacement of each point.
+   */
+  displacements(sizeOf) {
+    const dl = this.lump(LUMP.DISPINFO), vlump = this.lump(LUMP.DISP_VERTS);
+    const n = this.count(LUMP.DISPINFO, 176);
+    if (!n) return { groups: [], count: 0, triangles: 0 };
+
+    const fl = this.lump(LUMP.FACES), til = this.lump(LUMP.TEXINFO);
+    const vl = this.lump(LUMP.VERTEXES), el = this.lump(LUMP.EDGES), sl = this.lump(LUMP.SURFEDGES);
+    const lml = this.lump(LUMP.LIGHTING), pl = this.lump(LUMP.PLANES);
+    const tex = this.textureNames();
+    const bytes = new Uint8Array(this.buffer);
+
+    const nVerts = this.count(LUMP.VERTEXES, 12);
+    const sx = new Float32Array(nVerts), sy = new Float32Array(nVerts), sz = new Float32Array(nVerts);
+    for (let i = 0; i < nVerts; i++) {
+      const o = vl.ofs + i * 12;
+      sx[i] = this.dv.getFloat32(o, true);
+      sy[i] = this.dv.getFloat32(o + 4, true);
+      sz[i] = this.dv.getFloat32(o + 8, true);
+    }
+    const nEdges = this.count(LUMP.EDGES, 4);
+    const e0 = new Uint16Array(nEdges), e1 = new Uint16Array(nEdges);
+    for (let i = 0; i < nEdges; i++) {
+      e0[i] = this.dv.getUint16(el.ofs + i * 4, true);
+      e1[i] = this.dv.getUint16(el.ofs + i * 4 + 2, true);
+    }
+    const nSurf = this.count(LUMP.SURFEDGES, 4);
+    const surf = new Int32Array(nSurf);
+    for (let i = 0; i < nSurf; i++) surf[i] = this.dv.getInt32(sl.ofs + i * 4, true);
+
+    const luxel = (ofs, w, h, s, t) => {
+      const si = Math.max(0, Math.min(w - 1, Math.round(s)));
+      const ti = Math.max(0, Math.min(h - 1, Math.round(t)));
+      const o = lml.ofs + ofs + (ti * w + si) * 4;
+      if (ofs < 0 || o + 3 >= lml.ofs + lml.len) return null;
+      const e = Math.pow(2, (bytes[o + 3] << 24) >> 24) / 255;
+      return { r: bytes[o] * e, g: bytes[o + 1] * e, b: bytes[o + 2] * e };
+    };
+
+    const groups = new Map();
+    let triangles = 0, built = 0;
+
+    for (let d = 0; d < n; d++) {
+      const o = dl.ofs + d * 176;
+      const startX = this.dv.getFloat32(o, true);
+      const startY = this.dv.getFloat32(o + 4, true);
+      const startZ = this.dv.getFloat32(o + 8, true);
+      const vertStart = this.dv.getInt32(o + 12, true);
+      const power = this.dv.getInt32(o + 20, true);
+      const mapFace = this.dv.getUint16(o + 36, true);
+
+      const fo = fl.ofs + mapFace * 56;
+      const firstedge = this.dv.getInt32(fo + 4, true);
+      const numedges = this.dv.getInt16(fo + 8, true);
+      const texinfo = this.dv.getInt16(fo + 10, true);
+      const lightofs = this.dv.getInt32(fo + 20, true);
+      const minS = this.dv.getInt32(fo + 28, true), minT = this.dv.getInt32(fo + 32, true);
+      const sizeS = this.dv.getInt32(fo + 36, true), sizeT = this.dv.getInt32(fo + 40, true);
+      const planenum = this.dv.getUint16(fo, true);
+      const faceSide = bytes[fo + 2];
+      if (numedges !== 4) continue;                    // a displacement is always a quad
+
+      const t = tex[texinfo];
+      if (!t) continue;
+
+      // the face's own corners, in order
+      const c = [];
+      for (let k = 0; k < 4; k++) {
+        const se = surf[firstedge + k];
+        const v = se >= 0 ? e0[se] : e1[-se];
+        c.push({ x: sx[v], y: sy[v], z: sz[v] });
+      }
+      // corner 0 is whichever is nearest startPosition; the grid is built from it
+      let best = 0, bestD = Infinity;
+      for (let k = 0; k < 4; k++) {
+        const dd = (c[k].x - startX) ** 2 + (c[k].y - startY) ** 2 + (c[k].z - startZ) ** 2;
+        if (dd < bestD) { bestD = dd; best = k; }
+      }
+      const q = [c[best], c[(best + 1) % 4], c[(best + 2) % 4], c[(best + 3) % 4]];
+
+      const side = (1 << power) + 1;
+      const gx = new Float32Array(side * side), gy = new Float32Array(side * side), gz = new Float32Array(side * side);
+      for (let i = 0; i < side; i++) {
+        const fi = i / (side - 1);
+        const lx = q[0].x + (q[1].x - q[0].x) * fi, ly = q[0].y + (q[1].y - q[0].y) * fi, lz = q[0].z + (q[1].z - q[0].z) * fi;
+        const rx = q[3].x + (q[2].x - q[3].x) * fi, ry = q[3].y + (q[2].y - q[3].y) * fi, rz = q[3].z + (q[2].z - q[3].z) * fi;
+        for (let j = 0; j < side; j++) {
+          const fj = j / (side - 1);
+          const idx = i * side + j;
+          const vo = vlump.ofs + (vertStart + idx) * 20;
+          const dvx = this.dv.getFloat32(vo, true);
+          const dvy = this.dv.getFloat32(vo + 4, true);
+          const dvz = this.dv.getFloat32(vo + 8, true);
+          const dist = this.dv.getFloat32(vo + 12, true);
+          gx[idx] = lx + (rx - lx) * fj + dvx * dist;
+          gy[idx] = ly + (ry - ly) * fj + dvy * dist;
+          gz[idx] = lz + (rz - lz) * fj + dvz * dist;
+        }
+      }
+
+      // which way the base face points, so triangles can be wound to match
+      const po = pl.ofs + planenum * 20;
+      let pnx = this.dv.getFloat32(po, true), pny = this.dv.getFloat32(po + 4, true), pnz = this.dv.getFloat32(po + 8, true);
+      if (faceSide) { pnx = -pnx; pny = -pny; pnz = -pnz; }
+
+      const to = til.ofs + texinfo * 72;
+      const tv = k => this.dv.getFloat32(to + k * 4, true);
+      const dim = (sizeOf && sizeOf(t.name)) || { w: 512, h: 512 };
+      const lw = sizeS + 1, lh = sizeT + 1;
+      const hasLight = lightofs >= 0 && lw > 0 && lh > 0;
+
+      let g = groups.get(t.name);
+      if (!g) groups.set(t.name, g = { material: t.name, pos: [], light: [], uv: [] });
+
+      const emit = idx => {
+        const X = gx[idx], Y = gy[idx], Z = gz[idx];
+        g.pos.push(X, Z, -Y);                          // to Y-up
+        const i = Math.floor(idx / side), j = idx % side;
+        const c2 = hasLight
+          ? (luxel(lightofs, lw, lh, j / (side - 1) * (lw - 1), i / (side - 1) * (lh - 1)) || { r: 0.35, g: 0.35, b: 0.38 })
+          : { r: 0.35, g: 0.35, b: 0.38 };
+        g.light.push(c2.r, c2.g, c2.b);
+        g.uv.push(
+          (tv(0) * X + tv(1) * Y + tv(2) * Z + tv(3)) / dim.w,
+          -(tv(4) * X + tv(5) * Y + tv(6) * Z + tv(7)) / dim.h,
+        );
+      };
+
+      for (let i = 0; i < side - 1; i++) {
+        for (let j = 0; j < side - 1; j++) {
+          const a = i * side + j, b = a + 1, cc = a + side, e = cc + 1;
+          for (const tri of [[a, b, e], [a, e, cc]]) {
+            // wind so the surface normal agrees with the face it came from
+            const [i0, i1, i2] = tri;
+            const ux = gx[i1] - gx[i0], uy = gy[i1] - gy[i0], uz = gz[i1] - gz[i0];
+            const vx = gx[i2] - gx[i0], vy = gy[i2] - gy[i0], vz = gz[i2] - gz[i0];
+            const nx2 = uy * vz - uz * vy, ny2 = uz * vx - ux * vz, nz2 = ux * vy - uy * vx;
+            const facing = nx2 * pnx + ny2 * pny + nz2 * pnz >= 0;
+            if (facing) { emit(i0); emit(i1); emit(i2); }
+            else { emit(i0); emit(i2); emit(i1); }
+            triangles++;
+          }
+        }
+      }
+      built++;
+    }
+    return { groups: [...groups.values()], count: built, triangles };
   }
 
   /**

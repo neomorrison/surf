@@ -30,6 +30,8 @@ import { MOVE, RULES } from './config.js';
 export const SOLIDS = [];
 export const RAMPS = [];
 export const BRUSHES = [];
+/** Displacement terrain: a flat triangle soup, indexed by the same grid. */
+export const TRIS = { xyz: null, count: 0, cells: null, cell: 0, stamp: null };
 export const TRIGGERS = [];
 
 const UP = Object.freeze({ x: 0, y: 1, z: 0 });
@@ -37,6 +39,7 @@ const UP = Object.freeze({ x: 0, y: 1, z: 0 });
 export function clearPhysics() {
   SOLIDS.length = 0; RAMPS.length = 0; BRUSHES.length = 0; TRIGGERS.length = 0;
   GRID.cells = null;
+  TRIS.xyz = null; TRIS.count = 0; TRIS.cells = null; TRIS.stamp = null;
 }
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
@@ -223,6 +226,151 @@ export function brushesNear(minX, minY, minZ, maxX, maxY, maxZ, out) {
   return out;
 }
 
+/* ============================== displacement terrain ==============================
+   A displacement is not convex and cannot be a brush, so terrain is kept as a
+   plain triangle soup and collided directly. On a map built out of
+   displacements this is the surface you ride, not scenery, so it has to be
+   here rather than be an approximation of itself.
+
+   Box against triangle is done by separating axes: if any of the thirteen
+   candidate axes shows a gap, they are apart; otherwise the smallest overlap
+   found is the shortest way out, which is exactly the push and the normal that
+   ClipVelocity wants.                                                        */
+
+/** Install the terrain and index it. `xyz` is 9 floats per triangle. */
+export function setTriangles(xyz, cell = 256) {
+  TRIS.xyz = xyz;
+  TRIS.count = xyz ? xyz.length / 9 : 0;
+  TRIS.cell = cell;
+  TRIS.cells = new Map();
+  TRIS.stamp = new Int32Array(TRIS.count);
+  for (let t = 0; t < TRIS.count; t++) {
+    const o = t * 9;
+    let lo0 = Infinity, lo1 = Infinity, lo2 = Infinity, hi0 = -Infinity, hi1 = -Infinity, hi2 = -Infinity;
+    for (let k = 0; k < 3; k++) {
+      const x = xyz[o + k * 3], y = xyz[o + k * 3 + 1], z = xyz[o + k * 3 + 2];
+      if (x < lo0) lo0 = x; if (x > hi0) hi0 = x;
+      if (y < lo1) lo1 = y; if (y > hi1) hi1 = y;
+      if (z < lo2) lo2 = z; if (z > hi2) hi2 = z;
+    }
+    for (let x = Math.floor(lo0 / cell); x <= Math.floor(hi0 / cell); x++) {
+      for (let y = Math.floor(lo1 / cell); y <= Math.floor(hi1 / cell); y++) {
+        for (let z = Math.floor(lo2 / cell); z <= Math.floor(hi2 / cell); z++) {
+          const k = `${x},${y},${z}`;
+          let list = TRIS.cells.get(k);
+          if (!list) TRIS.cells.set(k, list = []);
+          list.push(t);
+        }
+      }
+    }
+  }
+  return TRIS.cells.size;
+}
+
+let triStamp = 0;
+
+/** Triangle indices whose cells the given box touches. */
+export function trianglesNear(minX, minY, minZ, maxX, maxY, maxZ, out) {
+  out.length = 0;
+  if (!TRIS.cells) return out;
+  const c = TRIS.cell, s = ++triStamp;
+  for (let x = Math.floor(minX / c); x <= Math.floor(maxX / c); x++) {
+    for (let y = Math.floor(minY / c); y <= Math.floor(maxY / c); y++) {
+      for (let z = Math.floor(minZ / c); z <= Math.floor(maxZ / c); z++) {
+        const list = TRIS.cells.get(`${x},${y},${z}`);
+        if (!list) continue;
+        for (const t of list) if (TRIS.stamp[t] !== s) { TRIS.stamp[t] = s; out.push(t); }
+      }
+    }
+  }
+  return out;
+}
+
+/* scratch, so the hot path allocates nothing */
+const _ax = new Float64Array(3), _ay = new Float64Array(3), _az = new Float64Array(3);
+const _hit = { depth: 0, x: 0, y: 0, z: 0 };
+
+/**
+ * Box against one triangle. Returns the shortest way out, or null if apart.
+ * `px,py,pz` is the box centre and `ex,ey,ez` its half-extents.
+ */
+export function triangleContact(t, px, py, pz, ex, ey, ez) {
+  const xyz = TRIS.xyz, o = t * 9;
+  for (let k = 0; k < 3; k++) {
+    _ax[k] = xyz[o + k * 3] - px;
+    _ay[k] = xyz[o + k * 3 + 1] - py;
+    _az[k] = xyz[o + k * 3 + 2] - pz;
+  }
+  let bestDepth = Infinity, bx = 0, by = 0, bz = 0;
+
+  const axis = (nx, ny, nz) => {
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-8) return true;                      // degenerate; carries no information
+    nx /= len; ny /= len; nz /= len;
+    let lo = Infinity, hi = -Infinity;
+    for (let k = 0; k < 3; k++) {
+      const d = _ax[k] * nx + _ay[k] * ny + _az[k] * nz;
+      if (d < lo) lo = d;
+      if (d > hi) hi = d;
+    }
+    const r = ex * Math.abs(nx) + ey * Math.abs(ny) + ez * Math.abs(nz);
+    if (lo > r || hi < -r) return false;               // a gap: they are apart
+    // push the box off whichever end is nearer
+    const outPos = hi + r, outNeg = r - lo;
+    const depth = outNeg < outPos ? outNeg : outPos;
+    if (depth < bestDepth) {
+      bestDepth = depth;
+      const sgn = outNeg < outPos ? -1 : 1;
+      bx = nx * sgn; by = ny * sgn; bz = nz * sgn;
+    }
+    return true;
+  };
+
+  // the triangle's own plane first: on terrain it is almost always the answer
+  const ux = _ax[1] - _ax[0], uy = _ay[1] - _ay[0], uz = _az[1] - _az[0];
+  const vx = _ax[2] - _ax[0], vy = _ay[2] - _ay[0], vz = _az[2] - _az[0];
+  if (!axis(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)) return null;
+  if (!axis(1, 0, 0) || !axis(0, 1, 0) || !axis(0, 0, 1)) return null;
+
+  const ex0 = [ux, _ax[2] - _ax[1], _ax[0] - _ax[2]];
+  const ey0 = [uy, _ay[2] - _ay[1], _ay[0] - _ay[2]];
+  const ez0 = [uz, _az[2] - _az[1], _az[0] - _az[2]];
+  for (let i = 0; i < 3; i++) {
+    if (!axis(0, -ez0[i], ey0[i])) return null;
+    if (!axis(ez0[i], 0, -ex0[i])) return null;
+    if (!axis(-ey0[i], ex0[i], 0)) return null;
+  }
+
+  _hit.depth = bestDepth; _hit.x = bx; _hit.y = by; _hit.z = bz;
+  return _hit;
+}
+
+/** Upward normal of a triangle, for deciding whether it is a floor or a ride. */
+function triNormalY(t) {
+  const xyz = TRIS.xyz, o = t * 9;
+  const ux = xyz[o + 3] - xyz[o], uy = xyz[o + 4] - xyz[o + 1], uz = xyz[o + 5] - xyz[o + 2];
+  const vx = xyz[o + 6] - xyz[o], vy = xyz[o + 7] - xyz[o + 1], vz = xyz[o + 8] - xyz[o + 2];
+  const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+  const L = Math.hypot(nx, ny, nz) || 1;
+  return { x: nx / L, y: ny / L, z: nz / L };
+}
+
+/** Height of a triangle's surface directly under a point, or null if outside it. */
+function triHeightAt(t, x, z) {
+  const xyz = TRIS.xyz, o = t * 9;
+  const x0 = xyz[o], y0 = xyz[o + 1], z0 = xyz[o + 2];
+  const x1 = xyz[o + 3], y1 = xyz[o + 4], z1 = xyz[o + 5];
+  const x2 = xyz[o + 6], y2 = xyz[o + 7], z2 = xyz[o + 8];
+  const d = (z1 - z2) * (x0 - x2) + (x2 - x1) * (z0 - z2);
+  if (Math.abs(d) < 1e-9) return null;                 // edge-on from above
+  const a = ((z1 - z2) * (x - x2) + (x2 - x1) * (z - z2)) / d;
+  const b = ((z2 - z0) * (x - x2) + (x0 - x2) * (z - z2)) / d;
+  const c = 1 - a - b;
+  const e = -0.001;
+  if (a < e || b < e || c < e) return null;
+  return a * y0 + b * y1 + c * y2;
+}
+
 /** How far a plane must move along its own normal to clear the hull. */
 function hullOffset(p, radius, height) {
   return radius * Math.abs(p.x) + (height / 2) * Math.abs(p.y) + radius * Math.abs(p.z);
@@ -346,6 +494,16 @@ export function findGround(x, z, lo, hi, radius) {
       if (on) { bestY = y; bestN = p; bestRamp = null; }
     }
   }
+  if (TRIS.count) {
+    for (const t of trianglesNear(x - radius, lo - 2, z - radius,
+                                  x + radius, hi + 2, z + radius, nearTris)) {
+      const n = triNormalY(t);
+      if (n.y < MOVE.walkableNormalY) continue;
+      const y = triHeightAt(t, x, z);
+      if (y == null || y < lo || y > hi || y <= bestY) continue;
+      bestY = y; bestN = n; bestRamp = null;
+    }
+  }
   return bestY > -Infinity ? { y: bestY, n: bestN, ramp: bestRamp } : null;
 }
 
@@ -361,6 +519,13 @@ export function hullFits(x, y, z, height, radius) {
   }
   for (const b of brushesNear(x - radius, y, z - radius, x + radius, y + height, z + radius, nearby)) {
     if (brushContact(b, x, y, z, radius, height)) return false;
+  }
+  if (TRIS.count) {
+    const ex = radius, ey = height / 2, cy = y + ey;
+    for (const t of trianglesNear(x - ex, y, z - ex, x + ex, y + height, z + ex, nearTris)) {
+      const c = triangleContact(t, x, cy, z, ex, ey, ex);
+      if (c && c.depth > 0.01) return false;
+    }
   }
   return true;
 }
@@ -407,6 +572,19 @@ export function findSurfContact(x, y, z, radius, height = MOVE.standHeight, reac
         if (dq > reach + 0.5) { on = false; break; }
       }
       if (on && Math.abs(d) < bestD) { bestD = Math.abs(d); found = { ramp: null, n: p }; }
+    }
+  }
+
+  if (TRIS.count) {
+    const ex = radius, ey = height / 2, cyy = y + ey;
+    for (const t of trianglesNear(x - ex, cyy - ey - reach, z - ex,
+                                  x + ex, cyy + ey + reach, z + ex, nearTris)) {
+      const n = triNormalY(t);
+      if (n.y <= 0.01 || n.y >= MOVE.walkableNormalY) continue;
+      const c = triangleContact(t, x, cyy, z, ex, ey + reach, ex);
+      if (!c) continue;
+      const gap = Math.max(0, reach - c.depth);
+      if (gap < bestD) { bestD = gap; found = { ramp: null, n }; }
     }
   }
   return found;
@@ -519,6 +697,22 @@ function resolve(pos, vel, height, canStep, radius, out) {
       if (out && c.n.y > 0.01 && c.n.y < MOVE.walkableNormalY) out.normal = c.n;
     }
 
+    if (TRIS.count) {
+      const ex = radius, ey = height / 2, cy = pos.y + ey;
+      for (const t of trianglesNear(pos.x - ex, cy - ey, pos.z - ex,
+                                    pos.x + ex, cy + ey, pos.z + ex, nearTris)) {
+        const c = triangleContact(t, pos.x, cy, pos.z, ex, ey, ex);
+        if (!c || c.depth <= 0) continue;
+        const n = triNormalY(t);
+        // a grounded player walks over a low lip rather than being stopped
+        if (canStep && n.y >= MOVE.walkableNormalY && c.depth <= MOVE.stepHeight + 0.01) continue;
+        pos.x += c.x * c.depth; pos.y += c.y * c.depth; pos.z += c.z * c.depth;
+        clipVelocity(vel, { x: c.x, y: c.y, z: c.z });
+        moved = true; hits++;
+        if (out && n.y > 0.01 && n.y < MOVE.walkableNormalY) out.normal = n;
+      }
+    }
+
     for (const s of SOLIDS) {
       if (pos.y + height <= s.minY + 0.005 || pos.y >= s.maxY - 0.005) continue;
       if (!(pos.x + radius > s.minX && pos.x - radius < s.maxX)) continue;
@@ -596,7 +790,8 @@ export function makeBody(x = 0, y = 0, z = 0) {
 }
 
 const contact = { ramp: null, normal: null };
-const nearby = [];          // scratch list for broadphase queries
+const nearby = [];          // scratch lists for broadphase queries
+const nearTris = [];
 
 /**
  * One fixed simulation tick.

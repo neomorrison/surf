@@ -15,7 +15,7 @@ import * as THREE from 'three';
 import { scene, renderer, setSky, setEnvironment, SKY_DAY } from '../core.js';
 import { MAP, beginMap, endMap, mark } from '../mapkit.js';
 import { mapGroup, NEON } from '../world.js';
-import { brush, trigger, buildBrushGrid, BRUSHES } from '../physics.js';
+import { brush, trigger, buildBrushGrid, setTriangles, BRUSHES } from '../physics.js';
 import { MOVE } from '../config.js';
 import { readBsp } from '../bsp.js';
 import { resolveTexture, parseVtf, makeTexture } from '../vtf.js';
@@ -72,19 +72,25 @@ export function buildFromBsp(bsp, meta) {
   const models = bsp.models();
   const world = bsp.worldBounds();
 
-  /* ---------------- where you start ---------------- */
-  const startEnt = ents.find(e => e.targetname === 'start_trigger');
-  const spawns = ents.filter(e => /^info_player_(counter)?terrorist$/.test(e.classname || '') && e.pos);
-  const startBox = entityBox(models, startEnt);
+  /* ---------------- where you start and finish ----------------
+     Every timer community names its zones differently — start_trigger,
+     zone_map_start, s1_start_zone — and some maps name nothing at all. So
+     candidates are scored rather than matched, and a map with no zones is
+     still playable, just untimed. */
+  const zones = findZones(ents, models);
+  const startBox = zones.start, endBox = zones.end;
 
-  // the spawn nearest the start zone is the one the run actually begins from
+  /* The spawn nearest the start zone is the one a run actually begins from:
+     a map carries dozens of them, most for the other team or other stages. */
+  const spawns = ents.filter(e => /^info_player_(counter)?terrorist$/.test(e.classname || '') && e.pos);
   let spawn = spawns[0];
   if (startBox && spawns.length) {
     const c = boxOf(startBox);
-    spawn = spawns.reduce((best, s) => {
-      const d = (s.pos.x - c.x) ** 2 + (s.pos.y - c.y) ** 2 + (s.pos.z - c.z) ** 2;
-      return d < best.d ? { s, d } : best;
-    }, { s: spawns[0], d: Infinity }).s;
+    let bestD = Infinity;
+    for (const sp of spawns) {
+      const d = (sp.pos.x - c.x) ** 2 + (sp.pos.y - c.y) ** 2 + (sp.pos.z - c.z) ** 2;
+      if (d < bestD) { bestD = d; spawn = sp; }
+    }
   }
   const yaw = viewYawFromSource(spawn ? +(spawn.angles || '0 0 0').split(/\s+/)[1] : 0);
 
@@ -111,6 +117,22 @@ export function buildFromBsp(bsp, meta) {
   let textured = 0;
   for (const g of surface.groups) if (addGroup(g, lib)) textured++;
 
+  /* Displacement terrain. On the maps built out of it this is the surface you
+     ride, so it goes into the collision world as well as the scene — as a
+     triangle soup, because a displacement is not convex and never will be. */
+  const disp = bsp.displacements(name => lib.size(name));
+  let terrainTris = 0;
+  if (disp.count) {
+    const soup = new Float32Array(disp.groups.reduce((a, g) => a + g.pos.length, 0));
+    let at = 0;
+    for (const g of disp.groups) {
+      if (addGroup(g, lib)) textured++;
+      soup.set(g.pos, at); at += g.pos.length;
+    }
+    terrainTris = soup.length / 9;
+    setTriangles(soup, 256);
+  }
+
   /* ---------------- the run ---------------- */
   MAP.stages.push({ i: 0, name: 'START', hint: '', color: NEON.lime, floorY: world.minY - 4000 });
   MAP.stages.push({ i: 1, name: meta.stageName || 'RUN', hint: meta.hint || '', color: NEON.teal, floorY: world.minY - 4000 });
@@ -119,8 +141,6 @@ export function buildFromBsp(bsp, meta) {
   const zone = (m, data) => trigger(m.minX, m.maxX, m.minY, m.maxY, m.minZ, m.maxZ, data);
   if (startBox) zone(startBox, { kind: 'start' });
 
-  const endEnt = ents.find(e => e.targetname === 'end_trigger');
-  const endBox = entityBox(models, endEnt);
   if (endBox) {
     zone(endBox, { kind: 'finish' });
     const c = boxOf(endBox);
@@ -157,9 +177,13 @@ export function buildFromBsp(bsp, meta) {
   MAP.bounds = world;
   MAP.stats = {
     brushes: solid, dropped, cells, teleports: tele,
+    startZone: zones.startName || (startBox ? 'nearest spawn' : 'none'),
+    endZone: zones.endName || (endBox ? 'furthest zone' : 'none'),
+    timed: !!(startBox && endBox),
     faces: surface.faces, drawn: surface.drawn, skipped: surface.skipped,
-    displacements: surface.displacements, unlitFaces: surface.unlit,
-    materials: surface.groups.length, textured,
+    displacements: disp.count, unlitFaces: surface.unlit,
+    materials: surface.groups.length + disp.groups.length, textured,
+    displacementTris: terrainTris,
   };
 
   /* ---------------- light it ----------------
@@ -284,6 +308,71 @@ function addGroup(g, lib) {
   m.frustumCulled = false;
   mapGroup.add(m);
   return !!mat.texture;
+}
+
+/* ---------------- timer zones ---------------- */
+
+const BONUS = /bonus|^b\d|_b\d/i;
+
+/**
+ * Find the start and finish volumes.
+ *
+ * Scored, not matched. Across six maps the same two zones are called
+ * start_trigger, zone_map_start, s1_start_zone and nothing at all, so a name
+ * is worth points rather than being a requirement, and geometry decides when
+ * names run out: the start is the zone nearest a spawn, and the finish is the
+ * one furthest from it.
+ */
+export function findZones(ents, models) {
+  const triggers = ents
+    .filter(e => /^trigger_(multiple|once)$/.test(e.classname || '') && e.model && e.model[0] === '*')
+    .map(e => ({ ent: e, box: entityBox(models, e), name: (e.targetname || '').toLowerCase() }))
+    .filter(t => t.box);
+
+  const score = (name, want) => {
+    if (!name) return 0;
+    if (BONUS.test(name)) return -50;                 // a bonus route is not the main run
+    let n = 0;
+    if (new RegExp(want).test(name)) n += 10; else return 0;
+    if (/zone|trigger/.test(name)) n += 3;
+    if (/map|^s1_|_s1_|main/.test(name)) n += 6;      // the map's own start, not a stage's
+    if (/\bs?\d{1,2}\b/.test(name)) n -= 2;           // a numbered stage is probably not it
+    return n;
+  };
+
+  const best = want => {
+    let top = null, topScore = 0;
+    for (const t of triggers) {
+      const sc = score(t.name, want);
+      if (sc > topScore) { topScore = sc; top = t; }
+    }
+    return top;
+  };
+
+  let start = best('start');
+  let end = best('end|finish|stop');
+
+  // nothing named usefully: fall back to where things are
+  const spawn = ents.find(e => /^info_player_(counter)?terrorist$/.test(e.classname || '') && e.pos);
+  if (spawn && triggers.length) {
+    const d2 = t => {
+      const c = boxOf(t.box);
+      return (c.x - spawn.pos.x) ** 2 + (c.y - spawn.pos.y) ** 2 + (c.z - spawn.pos.z) ** 2;
+    };
+    if (!start) start = triggers.reduce((a, b) => (d2(b) < d2(a) ? b : a));
+    if (!end) {
+      const far = triggers.filter(t => t !== start);
+      if (far.length) end = far.reduce((a, b) => (d2(b) > d2(a) ? b : a));
+    }
+  }
+
+  return {
+    start: start ? start.box : null,
+    end: end ? end.box : null,
+    startName: start ? start.name : null,
+    endName: end ? end.name : null,
+    candidates: triggers.length,
+  };
 }
 
 /** A registry entry for a .bsp sitting in local/maps/. */

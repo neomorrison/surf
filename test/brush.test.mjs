@@ -13,10 +13,12 @@ import { MOVE, slopeOf } from '../src/config.js';
 import {
   makeBody, playerMove, clearPhysics, rampVolume, brush, plane, brushVertices,
   brushContact, findGround, BRUSHES,
+  setTriangles, triangleContact, trianglesNear, TRIS,
 } from '../src/physics.js';
 
 const TICK = MOVE.tick;
 const near = (a, b, eps, msg) => assert.ok(Math.abs(a - b) < eps, `${msg}: ${a} vs ${b}`);
+const near_ = near;
 
 /** The same wedge the other tests use, but written out as six planes. */
 function rampAsBrush(angleDeg, halfU = 500, halfV = 6000, base = -900) {
@@ -158,4 +160,77 @@ test('a degenerate or unbounded brush is dropped, not crashed on', () => {
   clearPhysics();
   assert.equal(brush([plane(0, 1, 0, 0), plane(0, -1, 0, 0)]), null, 'two planes bound nothing');
   assert.equal(BRUSHES.length, 0, 'and nothing was added to the world');
+});
+
+/* ---------------- displacement terrain ---------------- */
+
+/** A flat grid of triangles at height `y`, spanning ±`half`. */
+function flatTerrain(y, half = 600, step = 200) {
+  const t = [];
+  for (let x = -half; x < half; x += step) {
+    for (let z = -half; z < half; z += step) {
+      // wound so the normal points up; the collider is right to ignore terrain
+      // that faces away, so a fixture that gets this wrong tests nothing
+      t.push(x, y, z, x, y, z + step, x + step, y, z);
+      t.push(x + step, y, z, x, y, z + step, x + step, y, z + step);
+    }
+  }
+  return new Float32Array(t);
+}
+
+test('a box resting on terrain is pushed out along the surface, not sideways', () => {
+  clearPhysics();
+  setTriangles(flatTerrain(0));
+  const r = MOVE.radius, h = MOVE.standHeight;
+  const near = [];
+  trianglesNear(-r, -20, -r, r, h, r, near);
+  assert.ok(near.length > 0, 'the broadphase should find the ground under the hull');
+
+  // a hull sunk 6 units into flat ground
+  let found = null;
+  for (const t of near) {
+    const c = triangleContact(t, 0, -6 + h / 2, 0, r, h / 2, r);
+    if (c && (!found || c.depth > found.depth)) found = { depth: c.depth, y: c.y };
+  }
+  assert.ok(found, 'contact with the ground');
+  near_(found.y, 1, 0.001, 'pushed straight up');
+  near_(found.depth, 6, 0.01, 'by exactly how far it had sunk');
+});
+
+test('terrain is ground when flat and a ride when steep', () => {
+  clearPhysics();
+  setTriangles(flatTerrain(0));
+  const g = findGround(0, 0, -20, 40, MOVE.radius);
+  assert.ok(g, 'flat terrain is ground');
+  near_(g.y, 0, 0.001, 'at its own height');
+  near_(g.n.y, 1, 1e-6, 'pointing up');
+
+  // the same grid tilted past the standable threshold
+  clearPhysics();
+  const flat = flatTerrain(0);
+  const tilt = Math.tan(58 * Math.PI / 180);
+  for (let i = 0; i < flat.length; i += 3) flat[i + 1] = flat[i] * tilt;
+  setTriangles(flat);
+  assert.equal(findGround(0, 0, -40, 40, MOVE.radius), null, 'a 58 is not ground');
+  const b = makeBody(0, 30, 0);
+  b.vel.z = 300;
+  for (let i = 0; i < 40; i++) playerMove(b, { forward: 0, side: 0, yaw: 0, jump: false }, TICK);
+  assert.ok(!b.onGround, 'and you never stand on it');
+  assert.ok(b.surfNormal, 'it reports as a face you are riding');
+});
+
+test('a player falls onto terrain and stops there', () => {
+  clearPhysics();
+  setTriangles(flatTerrain(0));
+  const b = makeBody(0, 400, 0);
+  for (let i = 0; i < 128 * 2; i++) playerMove(b, { forward: 0, side: 0, yaw: 0, jump: false }, TICK);
+  assert.ok(b.onGround, 'landed');
+  near_(b.pos.y, 0, 0.05, 'resting on the surface, not in it');
+});
+
+test('terrain is cleared with the rest of the world', () => {
+  setTriangles(flatTerrain(0));
+  assert.ok(TRIS.count > 0);
+  clearPhysics();
+  assert.equal(TRIS.count, 0, 'a rebuild must not inherit the last map terrain');
 });
