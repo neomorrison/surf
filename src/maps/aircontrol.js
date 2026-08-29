@@ -29,7 +29,7 @@ import { block, wall, zone, gate, sign, decal, voidGrid, pointGlow, monolith, MA
 
 export const meta = {
   id: "aircontrol",
-  name: "surf_aircontrol",
+  name: "Surf AirCtrl",
   blurb: "One shot, six ramps, no checkpoints. Timer-server rules: no bhop gain, 350 prespeed.",
 };
 
@@ -52,7 +52,7 @@ export function build() {
   wall(-450, -450, 900, 40, 0, 420);
   wall(-450, 450, 900, 40, 0, 420);
 
-  sign(-160, 560, 0, "SURF_AIRCONTROL", { color: NEON.cyan, rotY: facing(DIR.xPlus), w: 540 });
+  sign(-160, 560, 0, meta.name.toUpperCase(), { color: NEON.cyan, rotY: facing(DIR.xPlus), w: 540 });
   sign(-160, 370, 0, "ONE SHOT   ·   NO CHECKPOINTS", {
     color: NEON.rose, sub: "fall off anywhere and the run is over", rotY: facing(DIR.xPlus), w: 620,
   });

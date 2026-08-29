@@ -398,8 +398,12 @@ function renderMapPicker() {
     ? "no personal best on this map yet"
     : "personal best  " + formatTime(RECORDS.best);
 
-  const title = $("#startMapName");
-  if (title) title.textContent = MAP.name.replace(/^surf/, "");
+  // "Surf AirCtrl" reads as one word plain and the rest in accent, the way
+  // "surf" + "_helix" used to. A map whose name is a single word takes it all.
+  const kind = $("#startMapKind"), title = $("#startMapName");
+  const [head, ...rest] = MAP.name.split(" ");
+  if (kind) kind.textContent = rest.length ? head : "";
+  if (title) title.textContent = rest.length ? " " + rest.join(" ") : head;
   document.title = MAP.name + " — CS surf in the browser";
 
   /* What this course actually asks of you, in the terms a surf server would
@@ -436,7 +440,7 @@ function start() {
   unlockAudio();
   grabMouse();
   const bhop = RULES.bunnyhopping ? "" : "  ·  no bhop gain";
-  centerMessage(MAP.name.toUpperCase(),
+  centerMessage(MAP.name,
     "run through the green gate to start the clock" + bhop, 3.2, "#9dff64");
 }
 

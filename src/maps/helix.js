@@ -14,7 +14,7 @@ import { block, wall, zone, gate, sign, decal, voidGrid, pointGlow, monolith, MA
 
 export const meta = {
   id: "helix",
-  name: "surf_helix",
+  name: "Surf Helix",
   blurb: "Five stages, four checkpoints. Bunnyhopping on. Falling costs you the clock, not the run.",
 };
 
@@ -35,7 +35,7 @@ export function build() {
   wall(-1250, -450, 1700, 40, 0, 460);
   wall(-1250, 450, 1700, 40, 0, 460);
 
-  sign(-820, 620, 0, "SURF_HELIX", { color: NEON.teal, rotY: facing(DIR.xPlus), w: 520 });
+  sign(-820, 620, 0, meta.name.toUpperCase(), { color: NEON.teal, rotY: facing(DIR.xPlus), w: 520 });
   sign(-820, 410, 0, "A + MOUSE LEFT   ·   D + MOUSE RIGHT", {
     color: NEON.cyan, sub: "you never land on a ramp — you fall along it, forever", rotY: facing(DIR.xPlus), w: 620,
   });

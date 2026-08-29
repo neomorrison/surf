@@ -5,8 +5,8 @@ no speed multipliers, no assists. Two courses:
 
 | | |
 |---|---|
-| **surf_aircontrol** | One shot, six ramps, **no checkpoints**. Timer-server rules: no bhop gain, 350 prespeed. The flights between the ramps are the map. |
-| **surf_helix** | Five stages, four checkpoints. Falling costs you the clock, not the run. |
+| **Surf AirCtrl** (`surf_aircontrol`) | One shot, six ramps, **no checkpoints**. Timer-server rules: no bhop gain, 350 prespeed. The flights between the ramps are the map. |
+| **Surf Helix** (`surf_helix`) | Five stages, four checkpoints. Falling costs you the clock, not the run. |
 
 **[▶ Play them here](https://neomorrison.github.io/surf/)**
 
