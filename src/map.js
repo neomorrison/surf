@@ -35,14 +35,36 @@ export const MAPS = [
 export const BUILTIN = MAPS.filter(m => !m.packed);
 
 /**
+ * Is this a machine that could have a `local/` directory at all?
+ *
+ * It is gitignored, so it is never in a deployed build — asking for it on the
+ * public site is a guaranteed 404 in every visitor's console, which reads as a
+ * fault and is not one. Served from a machine you control, it is worth asking.
+ * `?local` forces the attempt for anyone hosting a build that does have one.
+ */
+function couldHaveLocalMaps() {
+  try {
+    if (new URLSearchParams(location.search).has('local')) return true;
+    if (location.protocol === 'file:') return true;
+    return /^(localhost|127\.0\.0\.1|\[::1\]|.*\.local)$/.test(location.hostname);
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
  * Courses from `local/`, which is gitignored and never deployed.
  *
- * This is where a map you own goes. Content you did not make stays on your own
+ * This is where a .bsp you own goes. Content you did not make stays on your own
  * machine: it cannot end up in the public repository or on the Pages build,
- * because the directory it lives in is not in the repository at all. The
- * import is dynamic and its absence is normal — the game runs without it.
+ * because the directory it lives in is not in the repository at all. The import
+ * is dynamic and its absence is normal — the game runs without it.
+ *
+ * A map already shipped packed in maps/ wins: the ids match, so dropping the
+ * same .bsp in local/ does not put it in the picker twice.
  */
 export async function loadLocalMaps() {
+  if (!couldHaveLocalMaps()) return 0;
   try {
     const mod = await import('../local/index.js');
     const extra = (mod.maps || []).filter(m => m && m.id && m.build);
