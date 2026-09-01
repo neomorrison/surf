@@ -346,20 +346,63 @@ function wireSettings() {
 
 const LS_MAP = "surf.map.v1";
 let mapId = DEFAULT_MAP;
+let loadingId = null;                  // the map being fetched, if any
 
 function loadMapChoice() {
   try { return localStorage.getItem(LS_MAP) || DEFAULT_MAP; } catch (e) { return DEFAULT_MAP; }
+}
+
+const MB = n => (n / 1048576).toFixed(1);
+
+/** What the card being loaded says while it is loading. */
+function loadNote(card, text, bad) {
+  if (!card) return;
+  let e = card.querySelector("u");
+  if (!e) { e = document.createElement("u"); card.appendChild(e); }
+  e.textContent = text;
+  e.classList.toggle("bad", !!bad);
 }
 
 /**
  * Build a course and hand the rest of the game its records. MAP is repopulated
  * in place, so nothing else needs to be told the map changed — but the HUD's
  * split rows and the practice list are per-course and do get rebuilt.
+ *
+ * A packed map is a download, so this can take a while and can fail. Only one
+ * runs at a time: two builds racing both call beginMap(), which empties the
+ * world in place, and the loser would finish last and win. And `mapId` only
+ * moves once the build has succeeded, so a failed download leaves the picker
+ * describing the map you are actually still on.
  */
-async function selectMap(id) {
-  mapId = MAPS.some(m => m.id === id) ? id : DEFAULT_MAP;
+async function selectMap(id, card) {
+  if (loadingId) return;
+  const want = MAPS.some(m => m.id === id) ? id : DEFAULT_MAP;
+  const entry = MAPS.find(m => m.id === want);
+  loadingId = want;
+  setPlayEnabled(false);
+  const picker = $("#mapPicker");
+  if (picker) picker.classList.add("busy");
+  if (entry && entry.bytes) loadNote(card, `fetching ${MB(entry.bytes)} MB`);
+
+  try {
+    await buildMap(want, (got, total, phase) => {
+      if (phase === 'building') return loadNote(card, "building the map");
+      loadNote(card, total ? `${MB(got)} of ${MB(total)} MB` : `${MB(got)} MB`);
+    });
+  } catch (e) {
+    console.error(e);
+    loadNote(card, e && e.message ? e.message : "could not load that map", true);
+    if (card) card.classList.remove("loading");
+    if (picker) picker.classList.remove("busy");
+    loadingId = null;
+    setPlayEnabled(true);
+    return;
+  }
+
+  mapId = want;
   try { localStorage.setItem(LS_MAP, mapId); } catch (e) {}
-  await buildMap(mapId);
+  loadingId = null;
+  if (picker) picker.classList.remove("busy");
   loadRecords();
   resetRun();
   resetPlayer();
@@ -368,7 +411,16 @@ async function selectMap(id) {
   buildStageButtons(gotoStage);
   refreshPB();
   renderMapPicker();
+  setPlayEnabled(true);
   $("#practiceBox").style.display = MAP.checkpoints.length ? "" : "none";
+}
+
+/** PLAY is a lie while a map is still arriving: there is no world behind it. */
+function setPlayEnabled(on) {
+  const b = $("#playBtn");
+  if (!b) return;
+  b.disabled = !on;
+  b.textContent = on ? "PLAY" : "LOADING";
 }
 
 /** The picker on the start panel: name, what it asks of you, and your best. */
@@ -385,11 +437,19 @@ function renderMapPicker() {
     const blurb = document.createElement("span"); blurb.textContent = m.blurb;
     const pb = document.createElement("i");
     pb.textContent = best == null ? "no personal best" : "best " + formatTime(best);
-    card.append(name, blurb, pb);
+    if (m.bytes && m.id !== mapId) {
+      const size = document.createElement("i");
+      size.className = "size";
+      size.textContent = MB(m.bytes) + " MB download";
+      card.append(name, blurb, pb, size);
+    } else {
+      card.append(name, blurb, pb);
+    }
     card.addEventListener("click", () => {
+      if (loadingId) return;
       sfxUi();
       card.classList.add("loading");
-      selectMap(m.id).catch(e => { console.error(e); card.classList.remove("loading"); });
+      selectMap(m.id, card);
     });
     box.appendChild(card);
   }
@@ -467,8 +527,6 @@ function boot() {
   });
 
   $("#playBtn").addEventListener("click", start);
-  $("#playBtn").disabled = false;
-  $("#playBtn").textContent = "PLAY";
   $("#btnChangeMap").addEventListener("click", () => {
     pause(false); booted = false; frozen = true;
     resetRun(); resetPlayer();

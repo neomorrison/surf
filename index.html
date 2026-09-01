@@ -151,6 +151,15 @@
   .mapcard span { font-size:12px; color:#9fb0d8; line-height:1.45; font-weight:normal; }
   .mapcard i { font-size:11.5px; color:#ffc23f; font-style:normal;
     font-family:"SFMono-Regular",Consolas,monospace; }
+  .mapcard i.size { color:#7d8aa6; }
+  /* A packed map is a download; while it runs the card says how far in it is. */
+  .mapcard.loading { border-color:#35e0c8; background:#12233a; cursor:progress; }
+  .mapcard.loading b::after { content:" …"; color:#35e0c8; }
+  .mapcard u { font-size:11.5px; color:#35e0c8; text-decoration:none;
+    font-family:"SFMono-Regular",Consolas,monospace; }
+  .mapcard u.bad { color:#ff8fae; }
+  #mapPicker.busy .mapcard:not(.loading) { opacity:.45; cursor:default; }
+  #mapPicker.busy .mapcard:not(.loading):hover { border-color:#23305a; background:#0f1329; }
   .picklabel { font-size:11px; letter-spacing:1.8px; color:#7d8aa6; margin-top:18px; }
   #mapRules { display:flex; flex-wrap:wrap; gap:6px; justify-content:center; margin-top:10px; }
   #mapRules span { font-size:11px; letter-spacing:.6px; color:#9fb0d8; background:#11162e;

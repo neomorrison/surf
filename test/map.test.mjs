@@ -3,7 +3,7 @@
 import './dom-stub.mjs';
 import test from 'node:test';
 import assert from 'node:assert';
-import { buildMapSync as buildMap, MAP, MAPS, airSections } from '../src/map.js';
+import { buildMapSync as buildMap, MAP, BUILTIN as MAPS, airSections } from '../src/map.js';
 import { RAMPS, SOLIDS, TRIGGERS } from '../src/physics.js';
 import { MOVE, RULES } from '../src/config.js';
 

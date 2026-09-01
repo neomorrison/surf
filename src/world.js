@@ -385,7 +385,14 @@ export function clearWorld() {
     mapGroup.remove(o);
     o.traverse?.(n => {
       if (n.geometry && n.geometry !== UNIT_BOX) n.geometry.dispose?.();
-      if (n.material && !SHARED_MATS.has(n.material)) n.material.dispose?.();
+      if (n.material && !SHARED_MATS.has(n.material)) {
+        /* A material's texture is not disposed with it, and a real map's
+           textures are most of what it costs on the GPU — a hundred and ten
+           of them on summer. Left alone they survive every map change, so
+           browsing the picker would climb until the context is lost. */
+        if (n.material.map && n.material.map.dispose) n.material.map.dispose();
+        n.material.dispose?.();
+      }
     });
   }
   clearPhysics();

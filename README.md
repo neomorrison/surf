@@ -1,12 +1,16 @@
 # surf
 
 Browser **CS surf**. Source-engine movement, ported faithfully and run by hand — no auto-strafe,
-no speed multipliers, no assists. Two courses:
+no speed multipliers, no assists. Two courses of its own:
 
 | | |
 |---|---|
 | **Surf AirCtrl** (`surf_aircontrol`) | One shot, six ramps, **no checkpoints**. Timer-server rules: no bhop gain, 350 prespeed. The flights between the ramps are the map. |
 | **Surf Helix** (`surf_helix`) | Five stages, four checkpoints. Falling costs you the clock, not the run. |
+
+and six real community maps, read out of their own `.bsp` files and packed small enough to serve:
+**AirCtrl KSF**, **Utopia**, **Cyberwave**, **Mesa**, **Mesa Mine** and **Summer**. They download
+when you pick them, 2 to 20 MB each. See [Real maps](#real-maps).
 
 **[▶ Play them here](https://neomorrison.github.io/surf/)**
 
@@ -320,6 +324,17 @@ src/world.js          builders: each emits the mesh AND the matching physics vol
 src/mapkit.js         the ride-line authoring language every course is written in
 src/maps/*.js         the courses themselves
 src/map.js            the registry: which course is currently built
+src/mapname.js        surf_aircontrol_ksf -> "Surf AirCtrl", for the picker only
+src/bsp.js            a reader for Source .bsp: brushes, faces, displacements, pakfile
+src/vtfread.js        .vmt/.vtf parsing, with no THREE in it so the packer can use it
+src/vtf.js            the same textures, as something WebGL will sample
+src/maps/bspextract.js   a .bsp reduced to plain numbers — no scene, no collision world
+src/maps/coursebuild.js  those numbers made playable. Every course path ends here
+src/maps/smap.js      the packed map container: write it in node, read it in the browser
+src/maps/packed.js    the six community maps that ship, and what they weigh
+maps/*.smap           those maps, 2 to 20 MB each, fetched when chosen
+tools/pack-map.mjs    .bsp -> .smap
+tools/verify-maps.mjs builds each map both ways and diffs the result
 src/player.js         view angles, eye smoothing (no roll: the horizon stays level)
 src/input.js          pointer lock; per-frame mouse split evenly across the frame's ticks
 src/timer.js          run state, splits, per-map records, the personal-best ghost
@@ -328,7 +343,8 @@ src/fx.js             rings, the ramp trail, the ghost mesh
 src/audio.js          synthesised — no sample files
 src/core.js           renderer, sky, starfield, lighting
 src/main.js           boot, the 128Hz loop, triggers, menus, the map picker
-test/                 movement, map and bot tests + the trace tool
+test/                 movement, map, bot and packed-map tests + the trace tool
+local/                a .bsp you own. Gitignored; never committed, never deployed
 ```
 
 `src/physics.js` deliberately imports nothing but `config.js` — not even the map. That is why the
@@ -344,6 +360,56 @@ split evenly across that frame's ticks. Air acceleration is a per-tick sum and a
 twenty unbroken seconds of it, so this is the difference between a 60Hz machine and a 240Hz one
 gaining the same speed and not.
 
+## Real maps
+
+Six community maps ship with the game. They are the maps this movement code exists to ride, and
+they are not reproductions — the brush planes you collide with and the triangles you look at are
+read out of each map's own `.bsp`.
+
+A `.bsp` is far too big to serve. Together these six are **614 MB**, and one of them, `surf_summer`,
+is 289 MB on its own — past the 100 MB a file can be in a git repository at all. But a `.bsp` is a
+compiler's output: it carries the visibility tree, the node hierarchy, the lightmap, the entity
+text and every face the compiler ever considered, because the engine that reads it needs all of
+that. This game needs the brush planes, the triangles, the images those triangles wear and the few
+volumes that run the clock — between a seventh and a fourteenth of the file.
+
+`tools/pack-map.mjs` extracts exactly that, deduplicates the vertices (three fifths of them are
+repeats of a shared corner), gzips the geometry and leaves the DXT textures alone, since they are
+compressed already:
+
+```
+surf_aircontrol_ksf    22.1 MB  ->   2.5 MB
+surf_utopia_njv        53.7 MB  ->   4.2 MB
+surf_cyberwave         91.2 MB  ->   6.7 MB
+surf_mesa_fixed        59.3 MB  ->  10.5 MB
+surf_mesa_mine         98.7 MB  ->   7.5 MB
+surf_summer           289.1 MB  ->  21.1 MB
+                      -------      -------
+                       614.2 MB     50.2 MB      8.2%
+```
+
+Same geometry, same textures at the same resolution, same baked lighting. Nothing the game would
+have used is thrown away, and that is checked rather than asserted: `npm run verify-maps` builds
+every course twice — once from its `.bsp`, once from its packed file — and compares the settled
+spawn, the stages, the route, the trigger volumes and their order, the brush and plane counts and
+the bounds. All six are identical. The format itself is covered by `test/smap.test.mjs`, which
+needs no `.bsp` and no network.
+
+Two of the six run untimed. `surf_mesa_fixed` and `surf_utopia_njv` carry no zone the start/finish
+scoring recognises, so they are playable but unclocked.
+
+### Packing your own
+
+Put a `.bsp` in `local/`, which is gitignored, and pack it:
+
+```
+npm run pack local/maps/surf_yours.bsp maps/
+```
+
+Then add a line to `src/maps/packed.js`. The format is `src/maps/smap.js`; the extraction it
+serialises is `src/maps/bspextract.js`, which is the same code the browser runs when it opens a
+`.bsp` directly, so a packed map cannot drift from the file it came from.
+
 ## Attribution
 
 Original game. The movement reproduces the Source-engine model — friction, ground acceleration,
@@ -353,7 +419,21 @@ from public documentation. All geometry, art and code are original and no Valve 
 `surf_aircontrol` is named for, and built to the shape of, the air-control genre of surf maps. It
 is not a port of any existing community map and shares no geometry with one. The map the genre is
 named after, `surf_air_control` / `surf_aircontrol_ksf`, is by **SnoopSh** (2012) — a tier-1,
-five-checkpoint map with two bonuses — and this is not a reproduction of it.
+five-checkpoint map with two bonuses — and this is not a reproduction of it. That map itself is
+one of the six that ship here, read from its own file.
+
+### The maps in `maps/`
+
+Those six are **not** this project's work. They are community surf maps, made by their own authors
+for Counter-Strike, and they are here because a movement port is worth nothing without the maps it
+was written for. `surf_aircontrol_ksf` is by **SnoopSh** (2012). The others carry their authors'
+tags in their names where they have one — `_njv` on utopia — but the files themselves record no
+author, and I would rather leave a name off than put the wrong one on: if you made one of these,
+open an issue and I will credit you properly.
+
+**If you made one of these and would rather it were not here, open an issue and it comes out.**
+No argument, no delay. Nothing has been modified: the geometry, textures and lighting are the
+author's, repacked into a smaller container and otherwise untouched.
 
 The module layout and renderer skeleton follow
 [neomorrison/bhop](https://github.com/neomorrison/bhop); the ramp solver, the map generator, the

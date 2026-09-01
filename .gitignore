@@ -2,6 +2,7 @@
 .claude/
 node_modules/
 
-# Local-only content: maps you own, and anything converted from them.
-# Never committed, never deployed to Pages. See README, "Playing your own maps".
+# A .bsp you own, and anything you drop beside it. Hundreds of megabytes each
+# and never committed — the packed maps in maps/ are what ships, and they are
+# made from these. See README, "Packing your own".
 local/

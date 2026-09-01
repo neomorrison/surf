@@ -9,10 +9,30 @@ import { MAP, DIR } from './mapkit.js';
 import { MOVE } from './config.js';
 import * as aircontrol from './maps/aircontrol.js';
 import * as helix from './maps/helix.js';
+import { maps as packedMaps } from './maps/packed.js';
 
 export { MAP, DIR };
 
-export const MAPS = [aircontrol, helix].map(m => ({ ...m.meta, build: m.build }));
+/**
+ * Every course, in the order the picker shows them.
+ *
+ * The two built-in ones first — they are code, they cost nothing, and one of
+ * them is what loads on arrival. Then the packed community maps, which are
+ * files in maps/ and are not fetched until chosen.
+ */
+export const MAPS = [
+  ...[aircontrol, helix].map(m => ({ ...m.meta, build: m.build })),
+  ...packedMaps,
+];
+
+/**
+ * The courses written in code, rather than fetched.
+ *
+ * They build synchronously and need nothing but this repository, which is why
+ * they are what the tests run against: a packed map is a download, and a test
+ * that needs the network is a test that fails for reasons of its own.
+ */
+export const BUILTIN = MAPS.filter(m => !m.packed);
 
 /**
  * Courses from `local/`, which is gitignored and never deployed.
@@ -42,15 +62,18 @@ export const DEFAULT_MAP = "aircontrol";
  * synchronously and `await` on them costs nothing, but a .bsp has to be
  * fetched before there is anything to build.
  */
-export async function buildMap(id = DEFAULT_MAP) {
+export async function buildMap(id = DEFAULT_MAP, onProgress) {
   const entry = MAPS.find(m => m.id === id) || MAPS.find(m => m.id === DEFAULT_MAP) || MAPS[0];
-  await entry.build();
+  await entry.build(onProgress);
   return MAP;
 }
 
 /** The synchronous path, for the built-in courses and the tests. */
 export function buildMapSync(id = DEFAULT_MAP) {
   const entry = MAPS.find(m => m.id === id) || MAPS.find(m => m.id === DEFAULT_MAP) || MAPS[0];
+  if (entry.packed || entry.local) {
+    throw new Error(`${id} is a file, not code: build it with buildMap()`);
+  }
   const r = entry.build();
   if (r && typeof r.then === 'function') throw new Error(`${id} must be built with buildMap()`);
   return MAP;

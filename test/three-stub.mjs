@@ -53,6 +53,14 @@ class Light extends Obj3D {
   }
 }
 
+class Tex {
+  constructor(data, width, height, format) {
+    this.image = { data, width, height }; this.format = format;
+    this.needsUpdate = false; this.wrapS = 0; this.wrapT = 0; this.anisotropy = 1;
+  }
+  dispose() {}
+}
+
 const three = {
   Scene: class extends Obj3D { }, Group: class extends Obj3D { }, Mesh: class extends Obj3D { constructor(g, m) { super(); this.geometry = g; this.material = m; } },
   LineSegments: class extends Obj3D { constructor(g, m) { super(); this.geometry = g; this.material = m; } },
@@ -66,6 +74,12 @@ const three = {
   MeshStandardMaterial: Material, MeshBasicMaterial: Material, LineBasicMaterial: Material, ShaderMaterial: Material,
   PointsMaterial: Material, BufferAttribute,
   CanvasTexture: class { constructor() { this.needsUpdate = false; this.wrapS = 0; this.wrapT = 0; this.anisotropy = 1; } },
+  /* Enough of a texture for the map loader to run headlessly. Nothing is
+     uploaded anywhere, but a course that reaches for a .vtf must not crash. */
+  DataTexture: Tex, CompressedTexture: Tex,
+  RGBAFormat: 1023, SRGBColorSpace: 'srgb', LinearFilter: 1006, NearestFilter: 1003,
+  RGB_S3TC_DXT1_Format: 33776, RGBA_S3TC_DXT1_Format: 33777,
+  RGBA_S3TC_DXT3_Format: 33778, RGBA_S3TC_DXT5_Format: 33779,
   RepeatWrapping: 1000,
   HemisphereLight: Light, DirectionalLight: Light, PointLight: Light,
   Vector3: V3, Color, Fog: class { constructor(c, n, f) { this.color = new Color(c); this.near = n; this.far = f; } },
@@ -77,7 +91,8 @@ export const {
   Scene, Group, Mesh, LineSegments, Line, Points, GridHelper, PerspectiveCamera, WebGLRenderer,
   BoxGeometry, SphereGeometry, PlaneGeometry, EdgesGeometry, BufferGeometry, CylinderGeometry,
   MeshStandardMaterial, MeshBasicMaterial, LineBasicMaterial, ShaderMaterial, PointsMaterial,
-  CanvasTexture, HemisphereLight, DirectionalLight, PointLight, Fog, RepeatWrapping,
+  CanvasTexture, DataTexture, CompressedTexture, HemisphereLight, DirectionalLight, PointLight, Fog, RepeatWrapping,
+  RGBAFormat, SRGBColorSpace, LinearFilter, NearestFilter,
   DoubleSide, BackSide, FrontSide, PCFSoftShadowMap, MathUtils,
 } = three;
 export { BufferAttribute };
