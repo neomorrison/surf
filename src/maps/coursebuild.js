@@ -15,6 +15,7 @@ import {
 } from '../physics.js';
 import { MOVE } from '../config.js';
 import { makeTexture } from '../vtf.js';
+import { applyEdits } from '../mapedits.js';
 
 /**
  * Make sure the spawn is somewhere a player can actually be.
@@ -198,7 +199,14 @@ function addGroup(g, lib) {
  * back out of a packed file. `meta` is the id, name and blurb the picker
  * shows, plus the rules the course is played under.
  */
-export function buildCourse(course, meta) {
+export function buildCourse(course, meta, edits) {
+  /* The volumes a map ships with are what its .bsp said. What it should have
+     said is in maps/edits.json, and this is where the two meet. The originals
+     are kept so the editor can name a volume by where it started rather than
+     by where it has been dragged to. */
+  const original = course.triggers.map(v => ({ ...v, data: { ...v.data } }));
+  applyEdits(course, edits);
+
   const world = course.bounds;
   const first = course.spawns[0];
 
@@ -256,6 +264,8 @@ export function buildCourse(course, meta) {
   endMap();
   MAP.bounds = world;
   MAP.stats = { ...course.stats, brushes: solid, dropped, cells, textured, spawn: MAP.spawnNote };
+  /* What the editor works from: the map as extracted, and the patch in force. */
+  MAP.editable = { id: meta.id, original, edits: edits || null };
 
   /* ---------------- light it ----------------
      The map arrives already lit: three megabytes of lightmap baked by the

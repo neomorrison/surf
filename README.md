@@ -311,6 +311,7 @@ thing to read past. What is left is instrumentation:
 | `Tab` | records |
 | `Esc` | settings and stage select |
 | `F1` | auto-hop · `F2`/`F3` key and sync display |
+| `F4` | the volume editor — see [Fixing a map](#fixing-a-map--the-editor) |
 
 Auto-hop answers *when*, never *where*, and it does nothing on a ramp.
 
@@ -332,7 +333,10 @@ src/maps/bspextract.js   a .bsp reduced to plain numbers — no scene, no collis
 src/maps/coursebuild.js  those numbers made playable. Every course path ends here
 src/maps/smap.js      the packed map container: write it in node, read it in the browser
 src/maps/packed.js    the six community maps that ship, and what they weigh
+src/editor.js         the F4 volume editor: fly, look, move a box, export a patch
+src/mapedits.js       the patch format, and applying it to an extracted course
 maps/*.smap           those maps, 2 to 20 MB each, fetched when chosen
+maps/edits.json       corrections to their zones. Text, diffable, applied at load
 tools/pack-map.mjs    .bsp -> .smap
 tools/verify-maps.mjs builds each map both ways and diffs the result
 src/player.js         view angles, eye smoothing (no roll: the horizon stays level)
@@ -397,6 +401,61 @@ needs no `.bsp` and no network.
 
 Two of the six run untimed. `surf_mesa_fixed` and `surf_utopia_njv` carry no zone the start/finish
 scoring recognises, so they are playable but unclocked.
+
+### Fixing a map — the editor
+
+The zones in a real `.bsp` are whatever its author put there, and read by
+something that is not the engine they were built for, some of them are wrong.
+Two of these six carry no zone the start/finish scoring recognises. Others have
+a `trigger_teleport` lying across a corridor you are supposed to fly through, so
+you get thrown back to the start for passing through the map correctly.
+
+Those are not problems you can fix by reading numbers. Press **F4** with a map
+on screen and you can go and look at them.
+
+The camera flies with no collision. Every volume is a box drawn *through* the
+geometry, because the troublesome ones are always buried in it:
+
+| | |
+|---|---|
+| **green** | the start zone |
+| **red** | the finish zone |
+| cyan | a teleport, with a line to where it sends you |
+| orange | a death volume |
+| violet | the prespeed cap — derived from the start zone, and not yours to edit |
+
+```
+WASD          fly            Space / Ctrl  up, down     Shift / Alt  faster, slower
+F             select what you are looking at            N / B  next, previous
+G             fly to the selection
+arrows        move it        PgUp / PgDn   raise, lower  [ ]  shrink, grow
+1 / 2         drop a new start / finish zone where you are looking
+X             delete the selection          Z  put every one of the map's own back
+C             show the collision brushes near you       Tab  free the cursor
+F4            leave — you keep the position you flew to, so you can try it
+```
+
+Every change is live: the boxes you are editing are the same objects the game
+is firing, so delete a teleport and fly through where it was. What comes out of
+**export** is `maps/edits.json` — save it over the file in the repo and commit.
+
+```json
+{
+  "utopia_njv": {
+    "add": [{ "kind": "finish", "minX": -9160, "maxX": -8840, ... }],
+    "disable": ["teleport@12672,-12704,-7808"],
+    "replace": { "finish@12096,-14048,-2488": { ... } }
+  }
+}
+```
+
+A volume is named by what it is and where its middle is, not by its position in
+a list, so a patch survives the map being packed again. Nothing edits the packed
+map: `maps/*.smap` stays an exact extraction of the `.bsp`, which is what makes
+`npm run verify-maps` mean anything. The patch is applied on top, at load.
+
+The two built-in courses are written in code, so the editor will show you their
+volumes but will not export a patch for them — edit `src/maps/helix.js` instead.
 
 ### Packing your own
 

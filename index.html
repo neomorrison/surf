@@ -140,6 +140,51 @@
     box-shadow:0 8px 26px rgba(53,224,200,.26); }
   .btn.ghost { background:#151832; color:#c3cfee; border:1px solid #2b3358; font-size:13px; padding:9px 20px; }
 
+
+  /* ================= editor ================= */
+  #editor { position:fixed; left:14px; top:14px; z-index:40; width:330px; display:none;
+    background:rgba(8,10,22,.92); border:1px solid #2b3358; border-radius:10px; padding:12px 13px;
+    font-size:12px; color:#c3cfee; pointer-events:none; max-height:calc(100vh - 28px);
+    display:none; flex-direction:column; gap:8px; }
+  #editor.show { display:flex; }
+  #editor.cursor { pointer-events:auto; border-color:#35e0c8; }
+  #edHead { font-size:13px; font-weight:bold; color:#e6ecff; letter-spacing:.4px; }
+  #edCounts { font-size:11px; font-family:"SFMono-Regular",Consolas,monospace; line-height:1.6; }
+  #edChanges { font-size:11px; color:#7d8aa6; font-family:"SFMono-Regular",Consolas,monospace; }
+  #edChanges.on { color:#ffc23f; }
+  #edStatus { font-size:11px; color:#9dff64; min-height:14px; }
+  #edSel { border-top:1px solid #23305a; padding-top:8px; font-size:11.5px; }
+  #edSel i { color:#7d8aa6; font-style:normal; }
+  #edSel .origin { display:block; color:#5c688a; font-size:10.5px; margin:2px 0 6px;
+    font-family:"SFMono-Regular",Consolas,monospace; word-break:break-all; }
+  #edSel .grid { display:grid; grid-template-columns:16px 1fr 1fr; gap:4px; align-items:center; }
+  #edSel .grid label { color:#7d8aa6; font-size:11px; }
+  #edSel input { background:#0f1329; border:1px solid #2b3358; border-radius:4px; color:#c3cfee;
+    font-family:"SFMono-Regular",Consolas,monospace; font-size:11px; padding:3px 5px; width:100%; }
+  #edSel .dest { margin-top:6px; color:#49c8ff; font-size:11px; }
+  #edList { overflow-y:auto; max-height:190px; display:flex; flex-direction:column; gap:2px;
+    border-top:1px solid #23305a; padding-top:8px; }
+  .vrow { display:flex; align-items:center; gap:6px; background:none; border:none; color:#9fb0d8;
+    font-family:inherit; font-size:11px; text-align:left; padding:3px 4px; border-radius:4px; cursor:pointer; }
+  .vrow:hover { background:#131a35; }
+  .vrow.on { background:#12233a; color:#e6ecff; }
+  .vrow i { width:8px; height:8px; border-radius:2px; flex:0 0 8px; }
+  .vrow span { color:#5c688a; font-family:"SFMono-Regular",Consolas,monospace; }
+  #edBtns { display:flex; flex-wrap:wrap; gap:4px; border-top:1px solid #23305a; padding-top:8px; }
+  #edBtns button { font-size:11px; padding:4px 8px; border-radius:5px; background:#131a35;
+    border:1px solid #2b3358; color:#c3cfee; cursor:pointer; font-family:inherit; }
+  #edBtns button:hover { border-color:#35e0c8; }
+  #edKeys { font-size:10.5px; color:#5c688a; line-height:1.65; border-top:1px solid #23305a; padding-top:8px; }
+  #edKeys b { color:#8b98bd; font-weight:normal;
+    font-family:"SFMono-Regular",Consolas,monospace; }
+  #edOut { position:fixed; inset:0; z-index:60; display:none; align-items:center; justify-content:center;
+    background:rgba(3,5,12,.86); padding:30px; }
+  #edOut.show { display:flex; }
+  #edOut .card { background:#0b0f20; border:1px solid #2b3358; border-radius:12px; padding:18px;
+    width:min(760px,92vw); max-height:86vh; display:flex; flex-direction:column; gap:10px; }
+  #edOut textarea { flex:1; min-height:320px; background:#080b18; border:1px solid #23305a; border-radius:8px;
+    color:#c3cfee; font-family:"SFMono-Regular",Consolas,monospace; font-size:11.5px; padding:10px; resize:none; }
+
   /* map picker */
   #mapPicker { display:grid; grid-template-columns:repeat(2,1fr); gap:9px; margin:18px 0 4px; }
   .mapcard { background:#0f1329; border:1px solid #23305a; border-radius:10px; padding:13px 15px;
@@ -284,6 +329,42 @@
   </div>
   </div>
 </div>
+
+
+<!-- ================= EDITOR ================= -->
+<div id="editor">
+  <div id="edHead"></div>
+  <div id="edCounts"></div>
+  <div id="edChanges"></div>
+  <div id="edStatus"></div>
+  <div id="edSel"></div>
+  <div id="edList"></div>
+  <div id="edBtns">
+    <button id="edNewStart">+ start</button>
+    <button id="edNewFinish">+ finish</button>
+    <button id="edDelete">delete</button>
+    <button id="edRevert">revert all</button>
+    <button id="edExport">export…</button>
+  </div>
+  <div id="edKeys">
+    <b>WASD</b> fly · <b>Space/Ctrl</b> up, down · <b>Shift</b> fast · <b>Alt</b> slow<br>
+    <b>F</b> select what you are looking at · <b>N/B</b> next, previous · <b>G</b> fly to it<br>
+    <b>arrows</b> move it · <b>PgUp/PgDn</b> raise, lower · <b>[ ]</b> shrink, grow<br>
+    <b>1</b> new start zone · <b>2</b> new finish · <b>X</b> delete · <b>Z</b> revert all<br>
+    <b>C</b> show collision near you · <b>Tab</b> cursor · <b>F4</b> leave
+  </div>
+</div>
+
+<div id="edOut"><div class="card">
+  <b>maps/edits.json</b>
+  <div class="muted" style="font-size:12px">Save this over <code>maps/edits.json</code> in the repo and commit it. The packed maps are not modified.</div>
+  <textarea id="edOutText" spellcheck="false"></textarea>
+  <div style="display:flex; gap:8px; justify-content:flex-end">
+    <button class="btn" id="edCopy">copy</button>
+    <button class="btn" id="edDownload">download</button>
+    <button class="btn" id="edOutClose">close</button>
+  </div>
+</div></div>
 
 <!-- ================= START ================= -->
 <div class="panel show" id="startPanel"><div class="card" id="startCard">

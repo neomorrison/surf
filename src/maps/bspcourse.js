@@ -15,6 +15,7 @@ import { readBsp } from '../bsp.js';
 import { resolveTexture, parseVtf } from '../vtf.js';
 import { extractCourse } from './bspextract.js';
 import { buildCourse } from './coursebuild.js';
+import { loadEdits } from '../mapedits.js';
 
 export { findZones } from './bspextract.js';
 
@@ -58,8 +59,8 @@ export function extractFromBsp(bsp) {
  * Turn a parsed .bsp into the live course.
  * `meta` supplies the id/name/blurb the picker shows.
  */
-export function buildFromBsp(bsp, meta) {
-  return buildCourse(extractFromBsp(bsp), meta);
+export function buildFromBsp(bsp, meta, edits) {
+  return buildCourse(extractFromBsp(bsp), meta, edits);
 }
 
 /** A registry entry for a .bsp sitting in local/maps/. */
@@ -70,7 +71,7 @@ export function bspCourse(meta) {
     local: true,
     async build() {
       if (!cached) cached = await fetchBsp(meta.url);
-      return buildFromBsp(cached, meta);
+      return buildFromBsp(cached, meta, await loadEdits(meta.id));
     },
   };
 }

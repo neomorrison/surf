@@ -26,6 +26,11 @@ import {
   initTrail, dropTrail, initGhost, setGhost,
 } from './fx.js';
 import { unlockAudio, updateAudio, sfxJump, sfxLand, sfxCheckpoint, sfxFinish, sfxPB, sfxFall, sfxPad, sfxUi, sfxRamp } from './audio.js';
+import {
+  isEditing, inCursorMode, setEditing, setCursor, setEditorDom, setGrabber,
+  editorFrame, editorKey, editorRefresh, editorStatus, exportJson, noteLock,
+  addZone, removeSelected, revertAll,
+} from './editor.js';
 
 const $ = s => document.querySelector(s);
 const TICK = MOVE.tick;
@@ -227,7 +232,10 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.25, (now - last) / 1000); last = now;
 
-  if (booted && !paused && !frozen) simulate(dt);
+  // In the editor there is no physics: the camera flies and the map holds still,
+  // which also means the clock stops, because the clock only ticks inside simulate().
+  if (isEditing()) { if (!paused) editorFrame(dt); }
+  else if (booted && !paused && !frozen) simulate(dt);
 
   const b = view.body;
   updateCamera(booted ? acc / TICK : 0, dt);
@@ -288,6 +296,15 @@ function gotoStage(i) {
 }
 
 function onKey(code) {
+  if (code === "F4") { toggleEditor(); return true; }
+  if (isEditing()) {
+    if (code === "Escape") {
+      if (inCursorMode()) { setCursor(false); return true; }
+      toggleEditor(); return true;
+    }
+    if (editorKey(code)) return true;
+    return true;                       // the editor owns the keyboard while it is open
+  }
   if (code === "Escape") {
     if ($("#resultsPanel").classList.contains("show")) {
       hidePanel("resultsPanel"); restartRun(true); setSuspended(false);
@@ -412,6 +429,7 @@ async function selectMap(id, card) {
   refreshPB();
   renderMapPicker();
   setPlayEnabled(true);
+  if (isEditing()) editorRefresh();          // a new map, a new set of volumes
   $("#practiceBox").style.display = MAP.checkpoints.length ? "" : "none";
 }
 
@@ -485,6 +503,72 @@ function renderMapPicker() {
   }
 }
 
+/* ============================== the editor ============================== */
+
+/**
+ * Open or close the volume editor.
+ *
+ * It needs a map on screen, so it is only reachable once you have pressed
+ * PLAY. Coming out, you keep the position you flew to — the whole reason to
+ * fly somewhere is usually to try it — but the run starts over, because you
+ * have just walked through the start zone from the wrong side.
+ */
+function toggleEditor() {
+  if (!booted) {
+    centerMessage("PRESS PLAY FIRST", "the editor needs a map on screen", 2.4, "#ffc23f");
+    return;
+  }
+  const next = !isEditing();
+  setEditing(next);
+  $("#editor").classList.toggle("show", next);
+  $("#hud").style.display = next ? "none" : "";
+  hidePanel("edOut");
+  if (next) {
+    grabMouse();
+  } else {
+    const b = view.body;
+    b.vel.x = b.vel.y = b.vel.z = 0;
+    inside.clear(); reached = 0; frozen = false;
+    resetRun(); refreshPB();
+    grabMouse();
+  }
+}
+
+function wireEditor() {
+  setEditorDom({
+    root: $("#editor"), head: $("#edHead"), counts: $("#edCounts"), status: $("#edStatus"),
+    changes: $("#edChanges"), sel: $("#edSel"), list: $("#edList"),
+  });
+  setGrabber(grabMouse);
+
+  $("#edNewStart").addEventListener("click", () => addZone("start"));
+  $("#edNewFinish").addEventListener("click", () => addZone("finish"));
+  $("#edDelete").addEventListener("click", () => removeSelected());
+  $("#edRevert").addEventListener("click", () => revertAll());
+  $("#edExport").addEventListener("click", async () => {
+    const json = await exportJson();
+    if (!json) {
+      editorStatus("this course is written in code — edit src/maps/ instead");
+      return;
+    }
+    $("#edOutText").value = json;
+    $("#edOut").classList.add("show");
+  });
+  $("#edOutClose").addEventListener("click", () => $("#edOut").classList.remove("show"));
+  $("#edCopy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText($("#edOutText").value); editorStatus("copied"); }
+    catch (e) { $("#edOutText").select(); editorStatus("select and copy by hand"); }
+  });
+  $("#edDownload").addEventListener("click", () => {
+    const blob = new Blob([$("#edOutText").value], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "edits.json";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
+}
+
 /* ============================== boot ============================== */
 
 function start() {
@@ -508,6 +592,7 @@ function boot() {
   loadSettings();
   setFov(SETTINGS.fov);
   wireSettings(); syncSettingsUI();
+  wireEditor();
   initTrail(); initGhost();
   // Courses from local/ (gitignored, offline only) join the picker if present.
   loadLocalMaps()
@@ -516,7 +601,11 @@ function boot() {
 
   initInput(renderer.domElement, {
     onKey,
-    onLockChange: locked => { if (!locked && booted && !paused && !panelOpen()) pause(true); },
+    onLockChange: locked => {
+      // In the editor, losing the pointer is how you reach the panel, not a pause.
+      if (isEditing()) return noteLock(locked);
+      if (!locked && booted && !paused && !panelOpen()) pause(true);
+    },
   });
 
   // A hidden tab gets no animation frames. Pause rather than banking wall clock

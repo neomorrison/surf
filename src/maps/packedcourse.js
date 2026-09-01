@@ -13,6 +13,7 @@
    a slow line is a long silence otherwise.                                  */
 import { decodeSmap } from './smap.js';
 import { buildCourse } from './coursebuild.js';
+import { loadEdits } from '../mapedits.js';
 
 /**
  * Fetch a packed map, reporting bytes as they arrive.
@@ -64,7 +65,7 @@ export function packedCourse(meta) {
       const buffer = await fetchPacked(meta.url, onProgress);
       if (onProgress) onProgress(meta.bytes || 0, meta.bytes || 0, 'building');
       const course = await decodeSmap(buffer);
-      return buildCourse(course, meta);
+      return buildCourse(course, meta, await loadEdits(meta.id));
     },
   };
 }

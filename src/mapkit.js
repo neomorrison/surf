@@ -62,6 +62,11 @@ export function beginMap(o) {
   MAP.finishPad = null; MAP.bounds = null;
   MAP.oneShot = !!o.oneShot;
   MAP.onFrame = null;
+  /* Belongs to whichever course set it, and a course that does not set it must
+     not inherit the last one's — the editor keys its patch off this, and a
+     stale one names the wrong map. */
+  MAP.editable = null;
+  MAP.stats = null; MAP.spawnNote = null;
   /* Whatever the last course did to the sky and the sun, put them back. */
   setSky({ ...SKY_VOID, radius: 18000 });
   setEnvironment({
