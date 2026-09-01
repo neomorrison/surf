@@ -250,6 +250,7 @@ class Bsp {
    */
   brushes(mask = CONTENTS.SOLID | CONTENTS.PLAYERCLIP) {
     const planes = this.planes(), sides = this.brushSides();
+    const tex = this.textureNames();
     const l = this.lump(LUMP.BRUSHES), n = this.count(LUMP.BRUSHES, 12);
     const { offset, nonSolid } = this.modelPlacement();
 
@@ -272,12 +273,25 @@ class Bsp {
       if (m != null && nonSolid.has(m)) continue;          // decorative, not collidable
       const t = m != null ? offset[m] : null;
       const ps = [];
+      /* A trigger volume is textured TOOLS/TOOLSTRIGGER on every side and is
+         carried as CONTENTS_SOLID, so the contents mask lets it through. Most
+         are caught by their entity model being non-solid, but a brush the
+         model walk does not reach falls back to the world and stays in
+         collision — and a trigger the size of a start room is then a solid
+         block you spawn inside. The texture flags say plainly what it is, so
+         ask them. Bevel sides carry no texture and do not vote. */
+      let trigger = 0, surface = 0;
       for (let k = 0; k < num; k++) {
         const s = sides[first + k];
         if (!s) continue;
+        if (!s.bevel) {
+          const face = tex[s.texinfo];
+          if (face && (face.flags & SURF_TRIGGER)) trigger++; else surface++;
+        }
         const p = planes[s.planenum];
         ps.push(t ? { x: p.x, y: p.y, z: p.z, d: p.d + p.x * t.x + p.y * t.y + p.z * t.z } : p);
       }
+      if (trigger && !surface) continue;
       if (ps.length >= 4) out.push({ planes: ps, contents });
     }
     return out;
