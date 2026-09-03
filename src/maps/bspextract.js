@@ -331,6 +331,13 @@ export function extractCourse(bsp, resolve) {
       faces: surface.faces, drawn: surface.drawn, skipped: surface.skipped,
       displacements: disp.count, unlitFaces: surface.unlit,
       materials: groups.length, images: images.length,
+      /* Named by a face and resolved to pixels, against named and not. A
+         material that does not resolve is not an error — TOOLS/TOOLSSKIP is
+         meant to be invisible, and a stock game texture was never in the map
+         — but a map where most of them fail draws flat grey, and that is
+         worth seeing in the output rather than in the game. */
+      namedMaterials: materials.size,
+      resolvedMaterials: [...materials.values()].filter(i => i >= 0).length,
       displacementTris: terrain.length / 9,
       teleports: tele, pits, dormant, triggerVolumes: vols,
       startZone: zones.startName || (startBox ? 'nearest spawn' : 'none'),

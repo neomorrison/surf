@@ -20,10 +20,12 @@
 import '../test/dom-stub.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 import { readBsp } from '../src/bsp.js';
-import { buildFromBsp } from '../src/maps/bspcourse.js';
+import { extractCourse } from '../src/maps/bspextract.js';
+import { resolveTexture, parseVtf } from '../src/vtfread.js';
 import { decodeSmap } from '../src/maps/smap.js';
 import { buildCourse } from '../src/maps/coursebuild.js';
 import { maps as packedMaps } from '../src/maps/packed.js';
+import { unpackEntry } from './pakdecode.mjs';
 import { MAP } from '../src/mapkit.js';
 import { BRUSHES, TRIGGERS, TRIS } from '../src/physics.js';
 
@@ -67,7 +69,20 @@ for (const m of wanted) {
   }
 
   const raw = readFileSync(bspPath);
-  buildFromBsp(readBsp(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)), meta);
+  const bsp = readBsp(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
+  /* The same reader the packer used, compressed materials and all. Reading the
+     .bsp any other way compares the packed map against a different map. */
+  const pak = bsp.pakfile(unpackEntry);
+  const resolve = name => {
+    const res = resolveTexture(pak, name);
+    if (!res) return null;
+    const raw2 = pak.get(res.path);
+    const vtf = raw2 && parseVtf(raw2);
+    if (!vtf) return null;
+    return { path: res.path, width: vtf.width, height: vtf.height,
+             format: vtf.format, data: vtf.data, translucent: res.translucent };
+  };
+  buildCourse(extractCourse(bsp, resolve), meta);
   const fromBsp = snapshot();
 
   const packed = readFileSync(m.url);

@@ -19,12 +19,13 @@ import { readBsp } from '../src/bsp.js';
 import { resolveTexture, parseVtf } from '../src/vtfread.js';
 import { extractCourse } from '../src/maps/bspextract.js';
 import { encodeSmap } from '../src/maps/smap.js';
+import { unpackEntry } from './pakdecode.mjs';
 
 const MB = n => (n / 1048576).toFixed(2) + ' MB';
 
 /** A material name, followed through its patch/include chain to its pixels. */
 function pakResolver(bsp) {
-  const pak = bsp.pakfile();
+  const pak = bsp.pakfile(unpackEntry);
   return name => {
     const res = resolveTexture(pak, name);
     if (!res) return null;
@@ -57,6 +58,8 @@ async function pack(bspPath, outDir) {
   console.log(`  ${MB(before)} -> ${MB(packed.length)}  (${(packed.length / before * 100).toFixed(1)}%)`);
   console.log(`  ${course.brushes.length} brushes, ${course.groups.length} meshes, ` +
     `${course.images.length} images, ${s.displacementTris} terrain tris`);
+  console.log(`  ${s.resolvedMaterials}/${s.namedMaterials} materials resolved to a texture` +
+    (s.resolvedMaterials < s.namedMaterials / 2 ? '  — this map will draw mostly untextured' : ''));
   console.log(`  ${course.spawns.length} spawns, ${course.triggers.length} volumes, ` +
     `${s.teleports} teleports, ${s.pits} pits` + (s.timed ? '' : ', NOT TIMED'));
   if (!s.timed) console.log(`  ! no start/finish zone found — this map will play untimed`);

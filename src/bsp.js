@@ -132,10 +132,18 @@ class Bsp {
    * A .bsp carries a zip of everything the map needs that the game does not
    * already have. On a well-packed map that is all of it, which is why the
    * map works on a server that has never seen it — and why it can be textured
-   * here with no game install at all. Entries in a bsp pakfile are stored,
-   * not deflated, so this only has to walk the central directory and slice.
+   * here with no game install at all.
+   *
+   * Most maps store their entries uncompressed, and walking the central
+   * directory and slicing is the whole job. Some do not: surf_boreas packs
+   * 1929 entries as ZIP method 14, which is LZMA, and without a decoder every
+   * one of its 117 textures is invisible and the map draws flat grey. So a
+   * caller that HAS a decoder can pass one — `decode(bytes, method, size)`,
+   * returning bytes or null. tools/pack-map.mjs does, because it runs in node
+   * where that is cheap. The browser does not, and does not need to: what it
+   * loads is the packed map, where the textures are already out.
    */
-  pakfile() {
+  pakfile(decode) {
     const l = this.lump(LUMP.PAKFILE);
     const files = new Map();
     if (!l.len) return files;
@@ -155,18 +163,23 @@ class Bsp {
     for (let i = 0; i < count && p + 46 <= l.len; i++) {
       if (dv.getUint32(p, true) !== 0x02014b50) break;
       const method = dv.getUint16(p + 10, true);
-      const size = dv.getUint32(p + 20, true);
+      const size = dv.getUint32(p + 20, true);        // compressed
+      const full = dv.getUint32(p + 24, true);        // and what it becomes
       const nameLen = dv.getUint16(p + 28, true);
       const extraLen = dv.getUint16(p + 30, true);
       const commentLen = dv.getUint16(p + 32, true);
       const local = dv.getUint32(p + 42, true);
       const name = dec.decode(bytes.subarray(p + 46, p + 46 + nameLen));
       p += 46 + nameLen + extraLen + commentLen;
-      if (method !== 0) continue;                     // stored only; nothing here is deflated
       const lnLen = dv.getUint16(local + 26, true);
       const leLen = dv.getUint16(local + 28, true);
       const start = local + 30 + lnLen + leLen;
-      files.set(name.toLowerCase().replace(/\\/g, '/'), bytes.subarray(start, start + size));
+      const body = bytes.subarray(start, start + size);
+      const key = name.toLowerCase().replace(/\\/g, '/');
+      if (method === 0) { files.set(key, body); continue; }
+      if (!decode) continue;                          // compressed, and nobody here can read it
+      const out = decode(body, method, full);
+      if (out) files.set(key, out);
     }
     return files;
   }

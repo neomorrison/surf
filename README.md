@@ -8,9 +8,9 @@ no speed multipliers, no assists. Two courses of its own:
 | **Surf AirCtrl** (`surf_aircontrol`) | One shot, six ramps, **no checkpoints**. Timer-server rules: no bhop gain, 350 prespeed. The flights between the ramps are the map. |
 | **Surf Helix** (`surf_helix`) | Five stages, four checkpoints. Falling costs you the clock, not the run. |
 
-and six real community maps, read out of their own `.bsp` files and packed small enough to serve:
-**AirCtrl KSF**, **Utopia**, **Cyberwave**, **Mesa**, **Mesa Mine** and **Summer**. They download
-when you pick them, 2 to 20 MB each. See [Real maps](#real-maps).
+and seven real community maps, read out of their own `.bsp` files and packed small enough to serve:
+**AirCtrl KSF**, **Utopia**, **Cyberwave**, **Mesa**, **Mesa Mine**, **Boreas** and **Summer**. They
+download when you pick them, 2 to 21 MB each. See [Real maps](#real-maps).
 
 **[▶ Play them here](https://neomorrison.github.io/surf/)**
 
@@ -332,8 +332,10 @@ src/vtf.js            the same textures, as something WebGL will sample
 src/maps/bspextract.js   a .bsp reduced to plain numbers — no scene, no collision world
 src/maps/coursebuild.js  those numbers made playable. Every course path ends here
 src/maps/smap.js      the packed map container: write it in node, read it in the browser
-src/maps/packed.js    the six community maps that ship, and what they weigh
+src/maps/packed.js    the seven community maps that ship, and what they weigh
 src/editor.js         the F4 volume editor: fly, look, move a box, export a patch
+tools/unlzma-bsp.mjs  undo a .bsp's LZMA lumps, for maps shipped compressed
+tools/pakdecode.mjs   read compressed materials out of a map's embedded zip
 src/mapedits.js       the patch format, and applying it to an extracted course
 maps/*.smap           those maps, 2 to 20 MB each, fetched when chosen
 maps/edits.json       corrections to their zones. Text, diffable, applied at load
@@ -366,11 +368,11 @@ gaining the same speed and not.
 
 ## Real maps
 
-Six community maps ship with the game. They are the maps this movement code exists to ride, and
+Seven community maps ship with the game. They are the maps this movement code exists to ride, and
 they are not reproductions — the brush planes you collide with and the triangles you look at are
 read out of each map's own `.bsp`.
 
-A `.bsp` is far too big to serve. Together these six are **614 MB**, and one of them, `surf_summer`,
+A `.bsp` is far too big to serve. Together these seven are **672 MB**, and one of them, `surf_summer`,
 is 289 MB on its own — past the 100 MB a file can be in a git repository at all. But a `.bsp` is a
 compiler's output: it carries the visibility tree, the node hierarchy, the lightmap, the entity
 text and every face the compiler ever considered, because the engine that reads it needs all of
@@ -383,30 +385,41 @@ compressed already:
 
 ```
 surf_aircontrol_ksf    22.1 MB  ->   2.5 MB
-surf_utopia_njv        53.7 MB  ->   4.2 MB
-surf_cyberwave         91.2 MB  ->   6.7 MB
-surf_mesa_fixed        59.3 MB  ->  10.5 MB
-surf_mesa_mine         98.7 MB  ->   7.5 MB
-surf_summer           289.1 MB  ->  21.1 MB
+surf_boreas            58.1 MB  ->   4.1 MB
+surf_utopia_njv        53.7 MB  ->   4.1 MB
+surf_cyberwave         91.2 MB  ->   6.4 MB
+surf_mesa_fixed        59.3 MB  ->  10.1 MB
+surf_mesa_mine         98.7 MB  ->   7.2 MB
+surf_summer           289.1 MB  ->  20.2 MB
                       -------      -------
-                       614.2 MB     50.2 MB      8.2%
+                       672.3 MB     54.4 MB      8.1%
 ```
 
 Same geometry, same textures at the same resolution, same baked lighting. Nothing the game would
 have used is thrown away, and that is checked rather than asserted: `npm run verify-maps` builds
 every course twice — once from its `.bsp`, once from its packed file — and compares the settled
 spawn, the stages, the route, the trigger volumes and their order, the brush and plane counts and
-the bounds. All six are identical. The format itself is covered by `test/smap.test.mjs`, which
+the bounds. All seven are identical. The format itself is covered by `test/smap.test.mjs`, which
 needs no `.bsp` and no network.
 
-Two of the six run untimed. `surf_mesa_fixed` and `surf_utopia_njv` carry no zone the start/finish
-scoring recognises, so they are playable but unclocked.
+Two of the seven run untimed. `surf_mesa_fixed` and `surf_utopia_njv` carry no zone the start/finish
+scoring recognises, so they are playable but unclocked. `surf_boreas` is the only one whose author
+named its zones the way a timer server expects — `zone_start`, `zone_end` — so it is the only one
+that arrives already clocked with nothing to fix.
+
+Two things a `.bsp` can do that stop it being read at all, both handled offline rather than in the
+browser. Its lumps can be LZMA-compressed, which `tools/unlzma-bsp.mjs` undoes into a plain `.bsp`.
+And its packed materials can be compressed inside the embedded zip — `surf_boreas` stores all 1929
+of its entries as ZIP method 14, LZMA, so without decoding them its 117 textures are invisible and
+the map draws flat grey. `tools/pakdecode.mjs` reads those, and `verify-maps` uses the same decoder
+the packer does, because reading the `.bsp` any other way would compare the packed map against a
+different map. Both need `xz` on PATH; there is no LZMA in node.
 
 ### Fixing a map — the editor
 
 The zones in a real `.bsp` are whatever its author put there, and read by
 something that is not the engine they were built for, some of them are wrong.
-Two of these six carry no zone the start/finish scoring recognises. Others have
+Two of these seven carry no zone the start/finish scoring recognises. Others have
 a `trigger_teleport` lying across a corridor you are supposed to fly through, so
 you get thrown back to the start for passing through the map correctly.
 
@@ -481,7 +494,7 @@ other, and mappers draw them diagonally all the time — a thin slab across a
 corner, a wedge following a ramp. The box around a thin diagonal slab is mostly
 not the slab.
 
-Sampled across the six maps, this is how much of the space inside a teleport's
+Sampled across the first six maps, this is how much of the space inside a teleport's
 bounding box is *not* inside the teleport:
 
 | map | teleport volumes | not axis-aligned | box that is not the volume |
@@ -531,16 +544,17 @@ from public documentation. All geometry, art and code are original and no Valve 
 is not a port of any existing community map and shares no geometry with one. The map the genre is
 named after, `surf_air_control` / `surf_aircontrol_ksf`, is by **SnoopSh** (2012) — a tier-1,
 five-checkpoint map with two bonuses — and this is not a reproduction of it. That map itself is
-one of the six that ship here, read from its own file.
+one of the seven that ship here, read from its own file.
 
 ### The maps in `maps/`
 
-Those six are **not** this project's work. They are community surf maps, made by their own authors
+Those seven are **not** this project's work. They are community surf maps, made by their own authors
 for Counter-Strike, and they are here because a movement port is worth nothing without the maps it
 was written for. `surf_aircontrol_ksf` is by **SnoopSh** (2012). The others carry their authors'
 tags in their names where they have one — `_njv` on utopia — but the files themselves record no
 author, and I would rather leave a name off than put the wrong one on: if you made one of these,
-open an issue and I will credit you properly.
+open an issue and I will credit you properly. `surf_boreas` names a `project_tendies` throughout
+its own material paths, which is the closest thing to a signature any of these files carries.
 
 **If you made one of these and would rather it were not here, open an issue and it comes out.**
 No argument, no delay. Nothing has been modified: the geometry, textures and lighting are the
