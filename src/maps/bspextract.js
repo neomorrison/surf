@@ -77,7 +77,12 @@ export function entityVolumes(bsp, ent) {
       if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
       if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
     }
-    out.push({ minX, maxX, minY, maxY, minZ, maxZ });
+    /* The planes come too, not just the box they imply. A trigger brush is
+       diagonal as often as not — a slab across a corner, a wedge along a ramp
+       — and its bounding box is then mostly not the trigger. Keeping the
+       planes is the difference between firing where the mapper drew and
+       firing across the whole corner of the room. */
+    out.push({ minX, maxX, minY, maxY, minZ, maxZ, planes });
   }
   return out;
 }
@@ -257,6 +262,8 @@ export function extractCourse(bsp, resolve) {
      really occupies rather than the box that contains it. */
   const triggers = [];
   const push = (vols, data) => { for (const v of vols) triggers.push({ ...v, data }); };
+  // a box that came from model bounds rather than from brushes has no shape
+  // beyond the box, and must not pretend otherwise
 
   let startVols = zones.startEnt ? entityVolumes(bsp, zones.startEnt) : [];
   if (!startVols.length && startBox) startVols = [startBox];

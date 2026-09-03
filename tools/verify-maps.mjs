@@ -44,7 +44,13 @@ const snapshot = () => ({
   brushPlanes: BRUSHES.reduce((a, b) => a + b.planes.length, 0),
   walkable: BRUSHES.filter(b => b.walkable).length,
   triangles: TRIS && TRIS.xyz ? TRIS.xyz.length : 0,
-  triggers: TRIGGERS.map(t => `${t.kind}@${t.minX},${t.minY},${t.minZ}`),
+  /* The whole box AND the shape inside it. A volume's planes are what decide
+     whether it fires, so comparing only the corner it starts at would let a
+     packed map differ from its .bsp in the one field that matters most. */
+  triggers: TRIGGERS.map(t =>
+    `${t.kind}@${t.minX},${t.minY},${t.minZ},${t.maxX},${t.maxY},${t.maxZ}` +
+    `|${(t.planes || []).map(p => `${p.x},${p.y},${p.z},${p.d}`).join(';')}`),
+  triggerPlanes: TRIGGERS.reduce((a, t) => a + (t.planes ? t.planes.length : 0), 0),
 });
 
 const arg = process.argv.slice(2);

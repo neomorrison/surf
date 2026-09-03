@@ -392,10 +392,37 @@ export function brushContact(b, x, feetY, z, radius, height) {
   return bn ? { depth: best, n: bn } : null;
 }
 
-/** Non-solid volume. `data` carries the gameplay meaning (see timer.js). */
+/**
+ * Non-solid volume. `data` carries the gameplay meaning (see timer.js).
+ *
+ * `data.planes`, when there is one, is the shape the mapper actually drew. A
+ * trigger brush is a brush like any other and is routinely diagonal — a thin
+ * slab across a corner, a wedge following a ramp — and the box around one of
+ * those is mostly not the trigger. Measured across the six maps in maps/,
+ * between 28% and 87% of the space inside a teleport's bounding box is not
+ * inside the teleport, and treating the box as the volume fires all of it:
+ * that is a player thrown back to the start for flying down a corridor they
+ * were supposed to fly down.
+ *
+ * So the box stays, as the broadphase it is good at, and the planes decide.
+ */
 export function trigger(minX, maxX, minY, maxY, minZ, maxZ, data) {
   const t = { minX, maxX, minY, maxY, minZ, maxZ, ...data };
   TRIGGERS.push(t); return t;
+}
+
+/**
+ * Is the hull inside this convex volume?
+ *
+ * The same expansion brushContact uses: push each plane out along its own
+ * normal by the hull's extent in that direction, and the box becomes a point.
+ */
+function hullInPlanes(planes, x, feetY, z, radius, height) {
+  const cy = feetY + height / 2;
+  for (const p of planes) {
+    if (p.x * x + p.y * cy + p.z * z - (p.d + hullOffset(p, radius, height)) > 0) return false;
+  }
+  return true;
 }
 
 /* ---------------- ramp geometry ---------------- */
@@ -600,9 +627,13 @@ export function triggersAt(pos, radius, height, out) {
   const hits = out || [];
   hits.length = 0;
   for (const t of TRIGGERS) {
+    // the box first: it rules out all but a handful, and for a volume that
+    // really is a box it is the whole answer
     if (pos.x + radius <= t.minX || pos.x - radius >= t.maxX) continue;
     if (pos.z + radius <= t.minZ || pos.z - radius >= t.maxZ) continue;
     if (pos.y + height <= t.minY || pos.y >= t.maxY) continue;
+    // then the shape, for the ones that are not
+    if (t.planes && !hullInPlanes(t.planes, pos.x, pos.y, pos.z, radius, height)) continue;
     hits.push(t);
   }
   return hits;

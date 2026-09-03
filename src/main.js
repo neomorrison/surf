@@ -28,7 +28,7 @@ import {
 import { unlockAudio, updateAudio, sfxJump, sfxLand, sfxCheckpoint, sfxFinish, sfxPB, sfxFall, sfxPad, sfxUi, sfxRamp } from './audio.js';
 import {
   isEditing, inCursorMode, setEditing, setCursor, setEditorDom, setGrabber,
-  editorFrame, editorKey, editorRefresh, editorStatus, exportJson, noteLock,
+  editorFrame, editorKey, editorRefresh, editorStatus, exportJson, noteLock, attachEditorMouse,
   addZone, removeSelected, revertAll,
 } from './editor.js';
 
@@ -540,6 +540,7 @@ function wireEditor() {
     changes: $("#edChanges"), sel: $("#edSel"), list: $("#edList"),
   });
   setGrabber(grabMouse);
+  attachEditorMouse(renderer.domElement);
 
   $("#edNewStart").addEventListener("click", () => addZone("start"));
   $("#edNewFinish").addEventListener("click", () => addZone("finish"));

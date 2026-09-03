@@ -244,7 +244,9 @@ export function buildCourse(course, meta, edits) {
   MAP.stages.push({ i: 2, name: 'FINISH', hint: '', color: NEON.amber, floorY: world.minY - 4000 });
 
   for (const v of course.triggers) {
-    trigger(v.minX, v.maxX, v.minY, v.maxY, v.minZ, v.maxZ, v.data);
+    // the planes ride along in `data`, which trigger() spreads onto the record
+    trigger(v.minX, v.maxX, v.minY, v.maxY, v.minZ, v.maxZ,
+      v.planes ? { ...v.data, planes: v.planes } : v.data);
   }
   if (course.prespeed) {
     const p = course.prespeed;

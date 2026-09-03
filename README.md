@@ -424,18 +424,34 @@ geometry, because the troublesome ones are always buried in it:
 | orange | a death volume |
 | violet | the prespeed cap — derived from the start zone, and not yours to edit |
 
+Each is drawn as the shape it actually is, not as the box around it — see
+below for why that distinction is the whole ballgame.
+
 ```
 WASD          fly            Space / Ctrl  up, down     Shift / Alt  faster, slower
-F             select what you are looking at            N / B  next, previous
+drag a face   resize that one side. Shift while dragging snaps to 16
+F or click    select what you are looking at            N / B  next, previous
 G             fly to the selection
-arrows        move it        PgUp / PgDn   raise, lower  [ ]  shrink, grow
+arrows        move it        PgUp / PgDn   raise, lower  [ ]  shrink, grow all round
 1 / 2         drop a new start / finish zone where you are looking
 X             delete the selection          Z  put every one of the map's own back
 C             show the collision brushes near you       Tab  free the cursor
 F4            leave — you keep the position you flew to, so you can try it
 ```
 
-Every change is live: the boxes you are editing are the same objects the game
+A zone is not a cube, so resizing is per face: hold the left button on the face
+you can see and it slides along its own normal, one side at a time, with the
+camera holding still under it. A face pointing at your eye has no direction on
+screen, which is the usual case for the face you are looking at — so up and
+down take over there, pushing it away from you and pulling it back.
+
+Moving a volume with the arrows carries its shape along, because translating a
+plane by `t` only moves its distance by `n·t`. Resizing one cannot: there is no
+meaning to "that diagonal slab, but forty units wider on X", so a volume you
+resize becomes the box you dragged it into, and the editor says so when it
+happens.
+
+Every change is live: the volumes you are editing are the same objects the game
 is firing, so delete a teleport and fly through where it was. What comes out of
 **export** is `maps/edits.json` — save it over the file in the repo and commit.
 
@@ -456,6 +472,42 @@ map: `maps/*.smap` stays an exact extraction of the `.bsp`, which is what makes
 
 The two built-in courses are written in code, so the editor will show you their
 volumes but will not export a patch for them — edit `src/maps/helix.js` instead.
+
+### A volume is not its bounding box
+
+The first version of this reduced every trigger to the box around it, and that
+was wrong in a way you could feel. A `trigger_teleport` is a brush like any
+other, and mappers draw them diagonally all the time — a thin slab across a
+corner, a wedge following a ramp. The box around a thin diagonal slab is mostly
+not the slab.
+
+Sampled across the six maps, this is how much of the space inside a teleport's
+bounding box is *not* inside the teleport:
+
+| map | teleport volumes | not axis-aligned | box that is not the volume |
+|---|---|---|---|
+| surf_aircontrol_ksf | 46 | 21 | 57.6% |
+| surf_utopia_njv | 76 | 53 | 81.0% |
+| surf_cyberwave | 58 | 18 | 28.4% |
+| surf_mesa_fixed | 125 | 38 | 75.1% |
+| surf_mesa_mine | 131 | 92 | 81.4% |
+| surf_summer | 280 | 158 | **87.3%** |
+
+All of that fired. It is why flying down a corridor you were supposed to fly
+down threw you back to the start: one of summer's teleports is a slab whose box
+is 5888 × 384 × 25344 units, nearly the length of the map.
+
+So a volume keeps its planes, and the box is only the broadphase — the cheap
+test that rules out all but a handful, and the whole answer for a volume that
+really is a box. The planes then decide, expanded outward by the hull's extent
+along each normal, which is the same test `brushContact` has always used for
+solid brushes and the same one Source uses. That removes between a quarter and
+a third of all false teleports; it is not the full 87% because a player is 32
+units wide and genuinely does clip a thin slab from up to 16 units away.
+
+`test/triggers.test.mjs` states the bug as a test: a diagonal slab must not
+fire in the two corners of its own bounding box, and the same volume without
+its planes must.
 
 ### Packing your own
 

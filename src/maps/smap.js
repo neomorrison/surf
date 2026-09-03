@@ -90,7 +90,12 @@ export async function encodeSmap(course) {
     counts[i] = course.brushes[i].length;
     planeTotal += course.brushes[i].length;
   }
-  const planes = new Float32Array(planeTotal * 4);
+  /* float64, not float32. A plane read straight from the file has a float32
+     distance, but a brush belonging to an entity with an origin has been
+     translated — d + n·t — and that result is not a float32. Rounding it costs
+     about a thousandth of a unit, which changes nothing you could ever feel,
+     and costs the word "identical" in verify-maps, which is worth more. */
+  const planes = new Float64Array(planeTotal * 4);
   let p = 0;
   for (const b of course.brushes) {
     for (const q of b) { planes[p++] = q.x; planes[p++] = q.y; planes[p++] = q.z; planes[p++] = q.d; }
@@ -109,6 +114,24 @@ export async function encodeSmap(course) {
 
   const bytesOf = a => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
 
+  /* A volume's shape, when it has one beyond its box. Kept in a section
+     rather than in the header: as JSON these run to a few hundred kilobytes
+     of "0.7071067690849304" on the bigger maps, and as float32 they gzip. */
+  const triggerCounts = new Uint16Array(course.triggers.length);
+  let triggerPlaneTotal = 0;
+  for (let i = 0; i < course.triggers.length; i++) {
+    const n = course.triggers[i].planes ? course.triggers[i].planes.length : 0;
+    triggerCounts[i] = n;
+    triggerPlaneTotal += n;
+  }
+  const triggerPlanes = new Float64Array(triggerPlaneTotal * 4);
+  let tp = 0;
+  for (const v of course.triggers) {
+    for (const q of (v.planes || [])) {
+      triggerPlanes[tp++] = q.x; triggerPlanes[tp++] = q.y; triggerPlanes[tp++] = q.z; triggerPlanes[tp++] = q.d;
+    }
+  }
+
   const sections = {
     pos: await section(bytesOf(new Float32Array(pos)), true),
     uv: await section(bytesOf(new Float32Array(uv)), true),
@@ -117,6 +140,8 @@ export async function encodeSmap(course) {
     planes: await section(bytesOf(planes), true),
     brushCounts: await section(bytesOf(counts), true),
     terrain: await section(bytesOf(course.terrain || new Float32Array(0)), true),
+    triggerPlanes: await section(bytesOf(triggerPlanes), true),
+    triggerPlaneCounts: await section(bytesOf(triggerCounts), true),
   };
 
   /* The images last, uncompressed: they are DXT blocks, which gzip cannot
@@ -135,7 +160,9 @@ export async function encodeSmap(course) {
     version: VERSION,
     bounds: course.bounds,
     spawns: course.spawns,
-    triggers: course.triggers,
+    triggers: course.triggers.map(v => ({
+      minX: v.minX, maxX: v.maxX, minY: v.minY, maxY: v.maxY, minZ: v.minZ, maxZ: v.maxZ, data: v.data,
+    })),
     prespeed: course.prespeed,
     finishPad: course.finishPad,
     env: course.env,
@@ -197,6 +224,10 @@ export async function decodeSmap(buffer) {
     const b = await read(s);
     return new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4);
   };
+  const doubles = async s => {
+    const b = await read(s);
+    return new Float64Array(b.buffer, b.byteOffset, b.byteLength / 8);
+  };
 
   const sec = header.sections;
   const pos = await floats(sec.pos);
@@ -204,7 +235,7 @@ export async function decodeSmap(buffer) {
   const light = await floats(sec.light);
   const idxBytes = await read(sec.index);
   const index = new Uint32Array(idxBytes.buffer, idxBytes.byteOffset, idxBytes.byteLength / 4);
-  const planeData = await floats(sec.planes);
+  const planeData = await doubles(sec.planes);
   const countBytes = await read(sec.brushCounts);
   const counts = new Uint16Array(countBytes.buffer, countBytes.byteOffset, countBytes.byteLength / 2);
   const terrain = await floats(sec.terrain);
@@ -225,6 +256,22 @@ export async function decodeSmap(buffer) {
     return { material: g.material, image: g.image, pos: gp, uv: gu, light: gl };
   });
 
+  /* Reattach each volume's shape. A count of zero means the volume really is
+     a box — a start zone taken from model bounds, say — and stays one. */
+  const tpData = await doubles(sec.triggerPlanes);
+  const tcBytes = await read(sec.triggerPlaneCounts);
+  const tCounts = new Uint16Array(tcBytes.buffer, tcBytes.byteOffset, tcBytes.byteLength / 2);
+  let tpAt = 0;
+  const triggers = header.triggers.map((v, i) => {
+    const n = tCounts[i] || 0;
+    if (!n) return v;
+    const planes = [];
+    for (let k = 0; k < n; k++, tpAt += 4) {
+      planes.push({ x: tpData[tpAt], y: tpData[tpAt + 1], z: tpData[tpAt + 2], d: tpData[tpAt + 3] });
+    }
+    return { ...v, planes };
+  });
+
   const brushes = [];
   let at = 0;
   for (const c of counts) {
@@ -242,7 +289,7 @@ export async function decodeSmap(buffer) {
   }));
 
   return {
-    bounds: header.bounds, spawns: header.spawns, triggers: header.triggers,
+    bounds: header.bounds, spawns: header.spawns, triggers,
     prespeed: header.prespeed, finishPad: header.finishPad, env: header.env,
     stats: header.stats, brushes, groups, images, terrain,
   };

@@ -28,17 +28,17 @@ const map = (id, file, bytes, blurb, name) => packedCourse({
 export const maps = [
   /* The map the built-in course is named for: SnoopSh's, 2012, tier 1. Both
      are in the picker, so the real one keeps the tag that tells them apart. */
-  map('aircontrol_ksf', 'surf_aircontrol_ksf', 2529203,
+  map('aircontrol_ksf', 'surf_aircontrol_ksf', 2544321,
     'The map the built-in course is named after. Six ramps, one shot.',
     uniqueMapName('surf_aircontrol_ksf', ['Surf AirCtrl'])),
-  map('utopia_njv', 'surf_utopia_njv', 4216247,
+  map('utopia_njv', 'surf_utopia_njv', 4249875,
     'Long linear descent. No timer zones in the file, so this one runs untimed.'),
-  map('cyberwave', 'surf_cyberwave', 6699331,
+  map('cyberwave', 'surf_cyberwave', 6722878,
     'Neon canyon. Tight, fast, and lit like it means it.'),
-  map('mesa_fixed', 'surf_mesa_fixed', 10548172,
+  map('mesa_fixed', 'surf_mesa_fixed', 10605421,
     'Displacement terrain — you ride the ground itself. Untimed: the file has no zones.'),
-  map('mesa_mine', 'surf_mesa_mine', 7483277,
+  map('mesa_mine', 'surf_mesa_mine', 7512702,
     'The mine below the mesa. Displacement terrain, thirty-three teleports.'),
-  map('summer', 'surf_summer', 21123314,
+  map('summer', 'surf_summer', 21185298,
     'The big one. Five hundred meshes, a quarter million terrain triangles.'),
 ];

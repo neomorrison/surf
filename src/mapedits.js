@@ -48,11 +48,20 @@ export function volumeKeys(triggers) {
 const BOX = ['minX', 'maxX', 'minY', 'maxY', 'minZ', 'maxZ'];
 const TELE = ['tx', 'ty', 'tz', 'tyaw'];
 
-/** A volume as it goes into a file: the box, the kind, and a teleport's target. */
+/**
+ * A volume as it goes into a file: the box, the kind, a teleport's target, and
+ * the shape if it has one.
+ *
+ * Six numbers is the normal case and the readable one. `planes` only appears
+ * when a volume the map drew diagonally has been moved rather than reshaped —
+ * without it, nudging a wedge four units sideways would flatten it into its
+ * bounding box, which is the very thing the shape is there to avoid.
+ */
 export function volumeToJson(v) {
   const out = { kind: v.data.kind };
   for (const k of BOX) out[k] = round(v[k]);
   if (v.data.kind === 'teleport') for (const k of TELE) if (v.data[k] != null) out[k] = v.data[k];
+  if (v.planes && v.planes.length) out.planes = v.planes.map(p => [p.x, p.y, p.z, p.d]);
   return out;
 }
 
@@ -62,6 +71,9 @@ export function jsonToVolume(o) {
   if (o.kind === 'teleport') for (const k of TELE) if (o[k] != null) data[k] = o[k];
   const v = { data };
   for (const k of BOX) v[k] = +o[k];
+  if (o.planes && o.planes.length) {
+    v.planes = o.planes.map(p => ({ x: +p[0], y: +p[1], z: +p[2], d: +p[3] }));
+  }
   return v;
 }
 
@@ -90,6 +102,9 @@ export function applyEdits(course, edits) {
     const key = keys[i];
     if (disable.has(key)) continue;
     const over = replace[key];
+    /* An untouched volume keeps the shape it was drawn with. A replaced one
+       does not: the file stores six numbers, so a volume you moved in the
+       editor is the box you left it as, and nothing pretends otherwise. */
     const v = over
       ? jsonToVolume({ ...volumeToJson(course.triggers[i]), ...over })
       : { ...course.triggers[i], data: { ...course.triggers[i].data } };

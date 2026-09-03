@@ -17,9 +17,9 @@
 
    Nothing here runs unless the editor is open.                              */
 import * as THREE from 'three';
-import { scene, camera } from './core.js';
+import { scene, camera, renderer } from './core.js';
 import { MAP } from './mapkit.js';
-import { TRIGGERS, trigger, BRUSHES, findGround } from './physics.js';
+import { TRIGGERS, trigger, BRUSHES, findGround, brushVertices } from './physics.js';
 import { view } from './player.js';
 import { mouse, consumeLook, clearLook, endFrame } from './input.js';
 import { MOVE } from './config.js';
@@ -80,6 +80,66 @@ function makeLines(color, opacity, width) {
   return m;
 }
 
+/**
+ * The edges and faces of a convex volume, from its planes.
+ *
+ * Each plane's corners are the brush vertices that lie on it; ordered around
+ * the face's middle they give that face's outline, which is both the wire to
+ * draw and a fan to fill. Drawing the box instead would be drawing the bug:
+ * the whole point of the shape is that it is not its bounding box.
+ */
+function hullShape(planes) {
+  const verts = brushVertices(planes);
+  if (verts.length < 4) return null;
+  const edges = [], tris = [];
+
+  for (const p of planes) {
+    const on = verts.filter(v => Math.abs(p.x * v.x + p.y * v.y + p.z * v.z - p.d) < 0.1);
+    if (on.length < 3) continue;
+
+    // a basis in the plane, to sort the corners around it
+    const ax = Math.abs(p.x) < 0.9 ? { x: 1, y: 0, z: 0 } : { x: 0, y: 1, z: 0 };
+    const ux = ax.y * p.z - ax.z * p.y, uy = ax.z * p.x - ax.x * p.z, uz = ax.x * p.y - ax.y * p.x;
+    const ul = Math.hypot(ux, uy, uz) || 1;
+    const U = { x: ux / ul, y: uy / ul, z: uz / ul };
+    const V = { x: p.y * U.z - p.z * U.y, y: p.z * U.x - p.x * U.z, z: p.x * U.y - p.y * U.x };
+
+    let cx = 0, cy = 0, cz = 0;
+    for (const v of on) { cx += v.x; cy += v.y; cz += v.z; }
+    cx /= on.length; cy /= on.length; cz /= on.length;
+
+    const ring = on.slice().sort((a, b) => {
+      const angle = v => Math.atan2(
+        (v.x - cx) * V.x + (v.y - cy) * V.y + (v.z - cz) * V.z,
+        (v.x - cx) * U.x + (v.y - cy) * U.y + (v.z - cz) * U.z);
+      return angle(a) - angle(b);
+    });
+
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i], b = ring[(i + 1) % ring.length];
+      edges.push(a.x, a.y, a.z, b.x, b.y, b.z);
+      tris.push(cx, cy, cz, a.x, a.y, a.z, b.x, b.y, b.z);
+    }
+  }
+  if (!edges.length) return null;
+  return { edges: new Float32Array(edges), tris: new Float32Array(tris) };
+}
+
+/** The wireframe for a volume that has a shape of its own. */
+function makeHullLines(planes, color, opacity) {
+  const shape = hullShape(planes);
+  if (!shape) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(shape.edges, 3));
+  const m = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+    color, transparent: true, opacity, depthTest: false, depthWrite: false, fog: false,
+  }));
+  m.renderOrder = 900;
+  m.frustumCulled = false;
+  m.userData.tris = shape.tris;
+  return m;
+}
+
 function place(mesh, t) {
   mesh.position.set((t.minX + t.maxX) / 2, (t.minY + t.maxY) / 2, (t.minZ + t.maxZ) / 2);
   mesh.scale.set(
@@ -116,8 +176,9 @@ export function editorRefresh() {
   items = [];
   for (const t of TRIGGERS) {
     const k = kindOf(t.kind);
-    const line = makeLines(k.color, t.kind === 'prespeed' ? 0.25 : 0.75);
-    place(line, t);
+    const opacity = t.kind === 'prespeed' ? 0.25 : 0.75;
+    const line = (t.planes && makeHullLines(t.planes, k.color, opacity)) || makeLines(k.color, opacity);
+    if (!line.userData.tris) place(line, t);
     group.add(line);
     const dest = destMarker(t, k.color);
     if (dest) group.add(dest);
@@ -147,13 +208,21 @@ function applySelection() {
        with a filled ghost inside it instead. */
     it.line.material.opacity = chosen ? 1 : (it.t.kind === 'prespeed' ? 0.25 : 0.55);
     if (chosen && !it.fill) {
-      it.fill = new THREE.Mesh(boxSolid, new THREE.MeshBasicMaterial({
+      const mat = new THREE.MeshBasicMaterial({
         color: k.color, transparent: true, opacity: 0.16, depthTest: false, depthWrite: false,
         side: THREE.DoubleSide, fog: false,
-      }));
+      });
+      const tris = it.line.userData.tris;
+      if (tris) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(tris, 3));
+        it.fill = new THREE.Mesh(geo, mat);
+      } else {
+        it.fill = new THREE.Mesh(boxSolid, mat);
+        place(it.fill, it.t);
+      }
       it.fill.renderOrder = 899;
       it.fill.frustumCulled = false;
-      place(it.fill, it.t);
       group.add(it.fill);
     } else if (!chosen && it.fill) {
       group.remove(it.fill); it.fill.material.dispose(); it.fill = null;
@@ -161,11 +230,32 @@ function applySelection() {
   }
 }
 
-/** After a volume's numbers change, move its boxes to match. */
+/**
+ * After a volume's numbers change, move its drawing to match.
+ *
+ * A plain box only needs its mesh moved. A shaped one has to be rebuilt from
+ * its planes, because the wire IS the shape — there is nothing to scale.
+ */
 function reshape(i) {
   const it = items[i];
-  place(it.line, it.t);
-  if (it.fill) place(it.fill, it.t);
+  const k = kindOf(it.t.kind);
+  const shaped = !!it.t.planes;
+  const wasShaped = !!it.line.userData.tris;
+
+  if (shaped || wasShaped) {
+    const chosen = i === sel;
+    group.remove(it.line); disposeGroup(it.line);
+    if (it.fill) { group.remove(it.fill); it.fill.geometry.dispose?.(); it.fill.material.dispose(); it.fill = null; }
+    const opacity = it.t.kind === 'prespeed' ? 0.25 : (chosen ? 1 : 0.55);
+    it.line = (shaped && makeHullLines(it.t.planes, k.color, opacity)) || makeLines(k.color, opacity);
+    if (!it.line.userData.tris) place(it.line, it.t);
+    group.add(it.line);
+    if (chosen) applySelection();
+  } else {
+    place(it.line, it.t);
+    if (it.fill) place(it.fill, it.t);
+  }
+
   if (it.dest) {
     group.remove(it.dest); disposeGroup(it.dest);
     it.dest = destMarker(it.t, kindOf(it.t.kind).color);
@@ -196,14 +286,152 @@ function rebuildBrushes() {
   status = `${n} brushes within ${R}u`;
 }
 
+/* ---------------- dragging a face ----------------
+   Zones are not cubes, so resizing has to be per axis, and the way to say
+   which axis is to grab the face you can see. Hold the button on a face and
+   it slides along its own normal; the camera holds still while you do it, so
+   the thing you are dragging stays where it is on screen.                  */
+
+let drag = null;
+
+/** Which face of a box a ray enters through, by the slab method. */
+function faceUnderRay(t) {
+  const o = ray.origin, d = ray.direction;
+  const lo = [t.minX, t.minY, t.minZ], hi = [t.maxX, t.maxY, t.maxZ];
+  const oo = [o.x, o.y, o.z], dd = [d.x, d.y, d.z];
+  let tmin = -Infinity, tmax = Infinity, axis = -1, side = 'min';
+  for (let a = 0; a < 3; a++) {
+    if (Math.abs(dd[a]) < 1e-9) {
+      if (oo[a] < lo[a] || oo[a] > hi[a]) return null;
+      continue;
+    }
+    const inv = 1 / dd[a];
+    let t1 = (lo[a] - oo[a]) * inv, t2 = (hi[a] - oo[a]) * inv;
+    let near = 'min';
+    if (t1 > t2) { const s = t1; t1 = t2; t2 = s; near = 'max'; }
+    if (t1 > tmin) { tmin = t1; axis = a; side = near; }
+    if (t2 < tmax) tmax = t2;
+    if (tmin > tmax) return null;
+  }
+  if (axis < 0) return null;
+  // standing inside it: grab the face you are looking at, on its way out
+  if (tmin < 0) {
+    tmin = tmax; axis = -1;
+    let best = Infinity;
+    for (let a = 0; a < 3; a++) {
+      if (Math.abs(dd[a]) < 1e-9) continue;
+      const inv = 1 / dd[a];
+      const tHi = (hi[a] - oo[a]) * inv, tLo = (lo[a] - oo[a]) * inv;
+      const tt = Math.max(tHi, tLo);
+      if (tt < best) { best = tt; axis = a; side = tHi > tLo ? 'max' : 'min'; }
+    }
+    if (axis < 0) return null;
+    tmin = best;
+  }
+  return { axis, side, dist: tmin };
+}
+
+/* How nearly an axis has to point at your eye before dragging it sideways
+   stops meaning anything. An angle, not a number of pixels: a face two
+   thousand units away projects to a fraction of a pixel per unit whichever way
+   it is turned, so a pixel threshold calls everything edge-on. */
+const EDGE_ON = 0.85;       // |axis · view|, about 32 degrees off the view line
+
+/**
+ * How far along an axis one pixel of mouse movement is worth, and which way.
+ *
+ * The axis is projected into screen space at the face's own distance, so a
+ * face far away moves slowly and one up close moves fast — which is what makes
+ * it feel like you are pushing the face rather than editing a number.
+ *
+ * Except that the face you want to drag is usually the one you are looking
+ * straight at, and an axis pointing at your eye has no direction on screen at
+ * all. That is not an error to refuse, it is the common case: when it happens,
+ * up and down take over and push the face away from you or pull it back.
+ */
+function dragScale(axis, at) {
+  const a = AXIS_N[axis];
+  const h = renderer.domElement.clientHeight || 720;
+  euler.set(view.pitch, view.yaw, 0, 'YXZ');
+  fwd.set(0, 0, -1).applyEuler(euler);
+  const facing = a.x * fwd.x + a.y * fwd.y + a.z * fwd.z;
+
+  if (Math.abs(facing) < EDGE_ON) {
+    // across the view: the mouse follows the axis where it lies on screen
+    const w = renderer.domElement.clientWidth || 1280;
+    const p0 = new THREE.Vector3(at.x, at.y, at.z);
+    const p1 = new THREE.Vector3(at.x + a.x, at.y + a.y, at.z + a.z);
+    p0.project(camera); p1.project(camera);
+    // NDC to pixels, with screen Y running the other way from NDC Y
+    const dx = (p1.x - p0.x) * w / 2, dy = -(p1.y - p0.y) * h / 2;
+    const len = Math.hypot(dx, dy);
+    if (Number.isFinite(len) && len > 1e-9) {
+      return { sx: dx / len, sy: dy / len, perPixel: Math.max(0.05, Math.min(12, 1 / len)) };
+    }
+  }
+
+  /* Down the view line. There is no sideways to follow, so up and down take
+     over: the mouse pushes the face away from you and pulls it back. */
+  const dist = Math.max(1, Math.hypot(
+    at.x - view.body.pos.x, at.y - (view.body.pos.y + view.eye), at.z - view.body.pos.z));
+  const perPixel = 2 * Math.tan((camera.fov * Math.PI / 180) / 2) * dist / h;
+  return { sx: 0, sy: facing >= 0 ? -1 : 1, perPixel: Math.max(0.05, Math.min(12, perPixel)) };
+}
+
+function beginDrag() {
+  if (sel < 0) return false;
+  aimRay();
+  const t = items[sel].t;
+  const f = faceUnderRay(t);
+  if (!f) return false;
+  const [lo, hi] = AXES[f.axis];
+  const at = {
+    x: (t.minX + t.maxX) / 2, y: (t.minY + t.maxY) / 2, z: (t.minZ + t.maxZ) / 2,
+  };
+  const axisKey = ['x', 'y', 'z'][f.axis];
+  at[axisKey] = f.side === 'min' ? t[lo] : t[hi];
+  const scale = dragScale(f.axis, at);
+  if (!scale) return false;
+  drag = { axis: f.axis, side: f.side, value: f.side === 'min' ? t[lo] : t[hi], ...scale };
+  if (flatten(t)) { reshape(sel); status = 'dragging — this volume is its box now, not its old shape'; }
+  else status = `dragging ${'XYZ'[f.axis]} ${f.side}`;
+  return true;
+}
+
+function updateDrag() {
+  if (!drag) return;
+  // taking the mouse here is what stops the camera turning under the drag
+  const dx = mouse.dx, dy = mouse.dy;
+  mouse.dx = 0; mouse.dy = 0;
+  if (!dx && !dy) return;
+  const step = held.has('ShiftLeft') || held.has('ShiftRight') ? 16 : 1;
+  drag.value += (dx * drag.sx + dy * drag.sy) * drag.perPixel;
+  setFace(drag.axis, drag.side, Math.round(drag.value / step) * step);
+  render();
+}
+
+function endDrag() {
+  if (!drag) return;
+  drag = null;
+  status = 'dragged';
+  render();
+}
+
+export const isDragging = () => !!drag;
+
 /* ---------------- selection ---------------- */
 
-/** The volume the crosshair is on, nearest first. */
-function pick() {
+/** The ray out of the crosshair, which is where the camera is looking. */
+function aimRay() {
   euler.set(view.pitch, view.yaw, 0, 'YXZ');
   fwd.set(0, 0, -1).applyEuler(euler);
   ray.origin.set(view.body.pos.x, view.body.pos.y + view.eye, view.body.pos.z);
   ray.direction.copy(fwd);
+}
+
+/** The volume the crosshair is on, nearest first. */
+function pick() {
+  aimRay();
 
   let best = -1, bestD = Infinity;
   for (let i = 0; i < items.length; i++) {
@@ -262,24 +490,61 @@ function snapBox(t) {
   t.minZ = Math.round(t.minZ); t.maxZ = Math.round(t.maxZ);
 }
 
-/** Move the whole box along an axis. */
+const AXIS_N = [{ x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }, { x: 0, y: 0, z: 1 }];
+
+/**
+ * Move the whole volume along an axis, shape and all.
+ *
+ * Translating a plane by t moves its distance by n·t and leaves its normal
+ * alone, so a diagonal volume slides without being flattened. That matters:
+ * turning a wedge into its bounding box is exactly the bug this editor exists
+ * to fix, and doing it by accident because you nudged it would be worse.
+ */
 function move(axis, d) {
   if (sel < 0) return;
   const t = items[sel].t;
   const [lo, hi] = AXES[axis];
   snapBox(t);
   t[lo] += d; t[hi] += d;
+  if (t.planes) {
+    const n = AXIS_N[axis];
+    t.planes = t.planes.map(p => ({ x: p.x, y: p.y, z: p.z, d: p.d + (p.x * n.x + p.y * n.y + p.z * n.z) * d }));
+  }
   reshape(sel);
 }
 
-/** Grow or shrink about the middle, never through itself. */
+/**
+ * Resize one face, or the whole thing about its middle.
+ *
+ * A shape cannot survive this — there is no meaning to "the diagonal slab, but
+ * 40 units wider on X" — so a resized volume becomes the box you dragged it
+ * into, and is told so once.
+ */
+function flatten(t) {
+  if (!t.planes) return false;
+  t.planes = null;
+  return true;
+}
+
 function resize(axis, d) {
   if (sel < 0) return;
   const t = items[sel].t;
   const [lo, hi] = AXES[axis];
   if (d < 0 && t[hi] - t[lo] <= 16) return;
   snapBox(t);
+  if (flatten(t)) status = 'resized — this volume is its box now, not its old shape';
   t[lo] -= d; t[hi] += d;
+  reshape(sel);
+}
+
+/** Drag one face to a new position along its own axis. */
+function setFace(axis, side, value) {
+  if (sel < 0) return;
+  const t = items[sel].t;
+  const [lo, hi] = AXES[axis];
+  const v = Math.round(value);
+  if (side === 'min') t[lo] = Math.min(v, t[hi] - 8);
+  else t[hi] = Math.max(v, t[lo] + 8);
   reshape(sel);
 }
 
@@ -347,7 +612,8 @@ export function revertAll() {
   const keys = volumeKeys(orig);
   for (let i = 0; i < orig.length; i++) {
     const v = orig[i];
-    trigger(v.minX, v.maxX, v.minY, v.maxY, v.minZ, v.maxZ, { ...v.data, origin: keys[i] });
+    trigger(v.minX, v.maxX, v.minY, v.maxY, v.minZ, v.maxZ,
+      v.planes ? { ...v.data, origin: keys[i], planes: v.planes } : { ...v.data, origin: keys[i] });
   }
   syncPrespeed();
   editorRefresh();
@@ -390,9 +656,16 @@ export function currentPatch() {
   return patch;
 }
 
-/** A live trigger record, back in the shape an edits file uses. */
+/**
+ * A live trigger record, back in the shape an edits file uses.
+ *
+ * The planes come with it. Without them an untouched diagonal volume compares
+ * unequal to the one it came from and every shaped volume in the map reports
+ * itself as an edit.
+ */
 const asVolume = t => ({
   minX: t.minX, maxX: t.maxX, minY: t.minY, maxY: t.maxY, minZ: t.minZ, maxZ: t.maxZ,
+  planes: t.planes || null,
   data: { kind: t.kind, tx: t.tx, ty: t.ty, tz: t.tz, tyaw: t.tyaw },
 });
 
@@ -413,7 +686,9 @@ export async function exportJson() {
 
 /** Fly. No collision, no gravity: this is the point of the mode. */
 export function editorFrame(dt) {
-  if (mouse.locked) { const applyLook = consumeLook(view, 1); applyLook(); clearLook(); }
+  // a drag eats the mouse, which is what keeps the camera still under it
+  if (drag) updateDrag();
+  else if (mouse.locked) { const applyLook = consumeLook(view, 1); applyLook(); clearLook(); }
   endFrame();
 
   euler.set(view.pitch, view.yaw, 0, 'YXZ');
@@ -495,6 +770,7 @@ export function setEditing(next, grab) {
     setCursor(false, grab);
     status = 'flying — F to select, 1 start, 2 finish, Tab for the panel';
   } else {
+    drag = null;
     if (group) { scene.remove(group); disposeGroup(group); group = null; }
     if (brushGroup) { scene.remove(brushGroup); disposeGroup(brushGroup); brushGroup = null; }
     items = []; sel = -1; cursor = false; showBrushes = false;
@@ -585,6 +861,32 @@ function render() {
 
 export function editorStatus(s) { status = s; render(); }
 
+/**
+ * Press on a face to drag it; press on anything else to select it.
+ *
+ * Only while the pointer is locked. In cursor mode a click on the canvas is
+ * how you get the pointer back, and a drag would be fighting that.
+ */
+function onMouseDown(e) {
+  if (!on || e.button !== 0 || !mouse.locked) return;
+  if (sel >= 0 && beginDrag()) { e.preventDefault(); render(); return; }
+  const i = pick();
+  if (i < 0) { status = 'nothing under the crosshair'; render(); return; }
+  selectIndex(i);
+  if (beginDrag()) e.preventDefault();
+  render();
+}
+
+function onMouseUp(e) {
+  if (e.button === 0) endDrag();
+}
+
+export function attachEditorMouse(canvas) {
+  canvas.addEventListener('mousedown', onMouseDown);
+  addEventListener('mouseup', onMouseUp);
+}
+
 addEventListener('keydown', onDown);
 addEventListener('keyup', onUp);
 addEventListener('blur', onBlur);
+addEventListener('blur', endDrag);
