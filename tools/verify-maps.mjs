@@ -26,6 +26,7 @@ import { decodeSmap } from '../src/maps/smap.js';
 import { buildCourse } from '../src/maps/coursebuild.js';
 import { maps as packedMaps } from '../src/maps/packed.js';
 import { unpackEntry } from './pakdecode.mjs';
+import { readProps } from './propgeom.mjs';
 import { MAP } from '../src/mapkit.js';
 import { BRUSHES, TRIGGERS, TRIS } from '../src/physics.js';
 
@@ -73,16 +74,16 @@ for (const m of wanted) {
   /* The same reader the packer used, compressed materials and all. Reading the
      .bsp any other way compares the packed map against a different map. */
   const pak = bsp.pakfile(unpackEntry);
-  const resolve = name => {
+  const resolve = (name, cap) => {
     const res = resolveTexture(pak, name);
     if (!res) return null;
     const raw2 = pak.get(res.path);
-    const vtf = raw2 && parseVtf(raw2);
+    const vtf = raw2 && parseVtf(raw2, cap);
     if (!vtf) return null;
     return { path: res.path, width: vtf.width, height: vtf.height,
              format: vtf.format, data: vtf.data, translucent: res.translucent };
   };
-  buildCourse(extractCourse(bsp, resolve), meta);
+  buildCourse(extractCourse(bsp, resolve, b => readProps(b, pak)), meta);
   const fromBsp = snapshot();
 
   const packed = readFileSync(m.url);

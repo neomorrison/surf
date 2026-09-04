@@ -20,17 +20,18 @@ import { resolveTexture, parseVtf } from '../src/vtfread.js';
 import { extractCourse } from '../src/maps/bspextract.js';
 import { encodeSmap } from '../src/maps/smap.js';
 import { unpackEntry } from './pakdecode.mjs';
+import { readProps } from './propgeom.mjs';
 
 const MB = n => (n / 1048576).toFixed(2) + ' MB';
 
 /** A material name, followed through its patch/include chain to its pixels. */
 function pakResolver(bsp) {
   const pak = bsp.pakfile(unpackEntry);
-  return name => {
+  return (name, cap) => {
     const res = resolveTexture(pak, name);
     if (!res) return null;
     const raw = pak.get(res.path);
-    const vtf = raw && parseVtf(raw);
+    const vtf = raw && parseVtf(raw, cap);
     if (!vtf) return null;
     return {
       path: res.path, width: vtf.width, height: vtf.height,
@@ -44,7 +45,8 @@ async function pack(bspPath, outDir) {
   const buffer = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
   const bsp = readBsp(buffer);
 
-  const course = extractCourse(bsp, pakResolver(bsp));
+  const pak = bsp.pakfile(unpackEntry);
+  const course = extractCourse(bsp, pakResolver(bsp), b => readProps(b, pak));
   const packed = await encodeSmap(course);
 
   const name = basename(bspPath, extname(bspPath));
@@ -60,6 +62,13 @@ async function pack(bspPath, outDir) {
     `${course.images.length} images, ${s.displacementTris} terrain tris`);
   console.log(`  ${s.resolvedMaterials}/${s.namedMaterials} materials resolved to a texture` +
     (s.resolvedMaterials < s.namedMaterials / 2 ? '  — this map will draw mostly untextured' : ''));
+  if (s.propInstances) {
+    const tris = course.props.models.reduce((a, m) =>
+      a + m.meshes.reduce((b, x) => b + x.positions.length / 9, 0), 0);
+    console.log(`  ${s.propInstances} props from ${s.propModels} models, ${tris} triangles between them` +
+      (s.propMissing ? `, ${s.propMissing} models not packed` : '') +
+      `; ${s.propSolid} solid, ${s.propHulls} collision hulls`);
+  }
   console.log(`  ${course.spawns.length} spawns, ${course.triggers.length} volumes, ` +
     `${s.teleports} teleports, ${s.pits} pits` + (s.timed ? '' : ', NOT TIMED'));
   if (!s.timed) console.log(`  ! no start/finish zone found — this map will play untimed`);

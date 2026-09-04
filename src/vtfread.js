@@ -74,7 +74,15 @@ export function resolveTexture(pak, material, depth = 0) {
  * table that arrived in version 7.3 and walk forwards, this measures the
  * full-size image and takes it off the end — which is version-proof.
  */
-export function parseVtf(bytes) {
+/**
+ * Read a .vtf down to a chosen mip.
+ *
+ * `maxDim` caps the largest side. Mips are stored smallest first, so the
+ * full-size image is the last thing in the file and each smaller one sits
+ * immediately before it — walking back from the end is version-proof and needs
+ * nothing parsed that the header does not already say.
+ */
+export function parseVtf(bytes, maxDim) {
   if (bytes.length < 64) return null;
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (dv.getUint32(0, true) !== 0x00465456) return null;              // "VTF\0"
@@ -88,11 +96,23 @@ export function parseVtf(bytes) {
   // take-it-off-the-end trick only holds for a single plain image
   if ((flags & ENVMAP) || frames > 1) return null;
 
-  const size = fmt.block
-    ? Math.max(1, Math.ceil(width / 4)) * Math.max(1, Math.ceil(height / 4)) * fmt.block
-    : width * height * fmt.bytes;
-  const start = bytes.length - size;
-  if (start < 0) return null;
+  const sizeOf = (w, h) => (fmt.block
+    ? Math.max(1, Math.ceil(w / 4)) * Math.max(1, Math.ceil(h / 4)) * fmt.block
+    : w * h * fmt.bytes);
 
-  return { width, height, format: fmt.name, data: bytes.subarray(start), translucentFormat: fmt.name === 'DXT5' };
+  /* Walk down the chain from the full-size image, stopping at the first mip
+     that fits — or at the smallest one there is, if none of them does. */
+  let w = width, h = height, from = bytes.length;
+  for (;;) {
+    const size = sizeOf(w, h);
+    if (from - size < 0) return null;
+    from -= size;
+    if (!maxDim || Math.max(w, h) <= maxDim) break;
+    if (w <= 4 && h <= 4) break;                     // nothing smaller worth taking
+    const nw = Math.max(1, w >> 1), nh = Math.max(1, h >> 1);
+    if (from - sizeOf(nw, nh) < 0) break;            // the file does not carry it
+    w = nw; h = nh;
+  }
+
+  return { width: w, height: h, format: fmt.name, data: bytes.subarray(from, from + sizeOf(w, h)), translucentFormat: fmt.name === 'DXT5' };
 }

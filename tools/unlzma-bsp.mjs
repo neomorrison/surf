@@ -99,17 +99,40 @@ export function decompressBsp(raw) {
     if (bodies[i]) Buffer.from(bodies[i]).copy(out, placed[i].ofs);
   }
 
-  /* The game lump holds absolute file offsets to its own sub-lumps, so moving
-     it invalidates them. Nothing in this project reads it — but leaving a file
-     behind that is quietly wrong is not the same as not reading it. */
+  /* The game lump holds absolute file offsets to its own sub-lumps, and those
+     payloads are not necessarily inside it: surf_boreas's game lump is 36 KB
+     and its static prop sub-lump alone is 123 KB, sitting elsewhere in the
+     file entirely. So they cannot be fixed up by shifting them along with the
+     game lump — that was the first thing tried here and it silently produced
+     a file whose prop lump pointed at nothing. They are relocated the same way
+     every other lump is: copied to the end, and pointed at.
+
+     They are copied as they are, compressed or not. A sub-lump can be LZMA
+     too, and unpacking one would change the size the game lump's directory
+     records — this pass makes a file readable, not a different file. */
   const g = placed[GAME_LUMP];
   if (g.len >= 4 && bodies[GAME_LUMP]) {
-    const delta = g.ofs - lumps[GAME_LUMP].ofs;
     const count = odv.getInt32(g.ofs, true);
+    const tail = [];
+    let end = out.length;
     for (let i = 0; i < count; i++) {
       const e = g.ofs + 4 + i * 16;
       if (e + 16 > g.ofs + g.len) break;
-      odv.setInt32(e + 8, odv.getInt32(e + 8, true) + delta, true);
+      const sofs = odv.getInt32(e + 8, true), slen = odv.getInt32(e + 12, true);
+      if (slen <= 0 || sofs <= 0 || sofs + slen > raw.length) continue;
+      end = (end + 3) & ~3;
+      tail.push({ e, at: end, bytes: raw.subarray(sofs, sofs + slen) });
+      end += slen;
+    }
+    if (tail.length) {
+      const grown = Buffer.alloc(end);
+      out.copy(grown, 0);
+      const gdv = new DataView(grown.buffer, grown.byteOffset, grown.byteLength);
+      for (const t of tail) {
+        Buffer.from(t.bytes).copy(grown, t.at);
+        gdv.setInt32(t.e + 8, t.at, true);
+      }
+      return { out: grown, compressed };
     }
   }
 

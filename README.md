@@ -336,6 +336,10 @@ src/maps/packed.js    the seven community maps that ship, and what they weigh
 src/editor.js         the F4 volume editor: fly, look, move a box, export a patch
 tools/unlzma-bsp.mjs  undo a .bsp's LZMA lumps, for maps shipped compressed
 tools/pakdecode.mjs   read compressed materials out of a map's embedded zip
+tools/props.mjs       the static prop lump: what is placed and where
+tools/phy.mjs         VPhysics convex hulls, for props you collide with
+tools/mdl.mjs         MDL/VVD/VTX meshes, for props you look at
+tools/propgeom.mjs    those three, placed into the world
 src/mapedits.js       the patch format, and applying it to an extracted course
 maps/*.smap           those maps, 2 to 20 MB each, fetched when chosen
 maps/edits.json       corrections to their zones. Text, diffable, applied at load
@@ -384,15 +388,15 @@ repeats of a shared corner), gzips the geometry and leaves the DXT textures alon
 compressed already:
 
 ```
-surf_aircontrol_ksf    22.1 MB  ->   2.5 MB
-surf_boreas            58.1 MB  ->   4.1 MB
+surf_aircontrol_ksf    22.1 MB  ->   2.7 MB
 surf_utopia_njv        53.7 MB  ->   4.1 MB
-surf_cyberwave         91.2 MB  ->   6.4 MB
-surf_mesa_fixed        59.3 MB  ->  10.1 MB
-surf_mesa_mine         98.7 MB  ->   7.2 MB
-surf_summer           289.1 MB  ->  20.2 MB
+surf_cyberwave         91.2 MB  ->   8.6 MB
+surf_mesa_mine         98.7 MB  ->  10.6 MB
+surf_mesa_fixed        59.3 MB  ->  13.0 MB
+surf_boreas            58.2 MB  ->  14.1 MB
+surf_summer           289.1 MB  ->  51.0 MB
                       -------      -------
-                       672.3 MB     54.4 MB      8.1%
+                       672.4 MB    104.1 MB     15.5%
 ```
 
 Same geometry, same textures at the same resolution, same baked lighting. Nothing the game would
@@ -485,6 +489,52 @@ map: `maps/*.smap` stays an exact extraction of the `.bsp`, which is what makes
 
 The two built-in courses are written in code, so the editor will show you their
 volumes but will not export a patch for them — edit `src/maps/helix.js` instead.
+
+### The ride surface is not always brushes
+
+`surf_boreas` loaded, drew its terrain, ran its clock — and had nothing to surf
+on. Nineteen of its ramps are `prop_static`, and this read brushes and
+displacements only. Ten of those props are `SOLID_VPHYSICS` with collision in
+the pakfile; the other nine are `SOLID_NONE`, decorative ramp shapes laid over
+terrain you actually ride, and non-solid in the real game too.
+
+Reading models means four more binary formats, none of which the browser ever
+sees — like the compressed pakfile, this happens once when a map is packed:
+
+```
+tools/props.mjs     the sprp game lump: what is placed, where, and how solid
+tools/phy.mjs       VPhysics convex hulls, for the ones that collide
+tools/mdl.mjs       MDL + VVD + VTX, for the ones you look at
+tools/propgeom.mjs  all three into one coordinate system
+```
+
+A solid prop's convex hulls become ordinary brushes, so the physics never has
+to learn that props exist — on boreas that took the surfable brush count from
+21 to 163, and all 163 are solid. Everything else is drawn instanced, one draw
+per model mesh: boreas places 1587 props from 26 models, and baking those out
+would write the same pine tree into the file 223 times.
+
+Two checks were worth their weight. The `.phy` reader is verified against the
+volume vphysics itself records in each file's trailing keyvalues — the hulls it
+returns match to within 3.5e-7, which is what proves no convex piece is missing
+rather than merely plausible. And the model meshes are checked against the
+bounding box the `.mdl` header declares, which is what catches a scrambled
+vertex fixup table.
+
+Props are drawn with a flat tint. Source lights a static prop from its own
+per-vertex `.vhv` file — boreas packs 1587 of them, one per prop — and this
+does not read those. Flat is the honest option; inventing a lighting model
+instead would make every prop disagree with the map around it.
+
+A texture only props use is capped at 512 across. A world surface is what you
+are looking at while you ride it and stays exactly as the author made it, but
+`surf_summer` places 729 props from 339 models, and its tree bark at 2048
+across cost more than the rest of the map put together. A texture a wall and a
+tree both use is resolved by the world first and keeps its full size.
+
+That map is still the outlier at 51 MB, against 20 MB before props. Most of
+that is 286 prop textures rather than geometry, which deduplicates to under a
+megabyte. Nothing else moved more than 3 MB.
 
 ### A volume is not its bounding box
 

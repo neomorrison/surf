@@ -28,21 +28,21 @@ const map = (id, file, bytes, blurb, name) => packedCourse({
 export const maps = [
   /* The map the built-in course is named for: SnoopSh's, 2012, tier 1. Both
      are in the picker, so the real one keeps the tag that tells them apart. */
-  map('aircontrol_ksf', 'surf_aircontrol_ksf', 2544366,
+  map('aircontrol_ksf', 'surf_aircontrol_ksf', 2810790,
     'The map the built-in course is named after. Six ramps, one shot.',
     uniqueMapName('surf_aircontrol_ksf', ['Surf AirCtrl'])),
-  map('utopia_njv', 'surf_utopia_njv', 4249917,
+  map('utopia_njv', 'surf_utopia_njv', 4250285,
     'Long linear descent. No timer zones in the file, so this one runs untimed.'),
-  map('cyberwave', 'surf_cyberwave', 6722921,
+  map('cyberwave', 'surf_cyberwave', 9034042,
     'Neon canyon. Tight, fast, and lit like it means it.'),
-  map('mesa_fixed', 'surf_mesa_fixed', 10605464,
+  map('mesa_fixed', 'surf_mesa_fixed', 13603303,
     'Displacement terrain — you ride the ground itself. Untimed: the file has no zones.'),
-  map('mesa_mine', 'surf_mesa_mine', 7512746,
+  map('mesa_mine', 'surf_mesa_mine', 11131825,
     'The mine below the mesa. Displacement terrain, thirty-three teleports.'),
   /* The only one so far whose author named its timer zones the way a timer
      server expects, so it is the only one that arrives already timed. */
-  map('boreas', 'surf_boreas', 4265883,
+  map('boreas', 'surf_boreas', 14767258,
     'Snow and ice, ridden on displacement terrain. Its own start and finish zones, so it runs timed.'),
-  map('summer', 'surf_summer', 21185343,
+  map('summer', 'surf_summer', 53515433,
     'The big one. Five hundred meshes, a quarter million terrain triangles.'),
 ];

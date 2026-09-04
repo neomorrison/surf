@@ -14,6 +14,18 @@
    differently. There is one extraction, and both paths go through it.       */
 import { brushVertices } from '../physics.js';
 
+/**
+ * The largest a texture may be when only props use it.
+ *
+ * A world surface is what you are looking at while you ride it, and those stay
+ * exactly as the author made them. A prop is scenery seen at distance and in
+ * bulk — surf_summer places 729 of them from 339 models — and shipping every
+ * tree bark at 2048 across costs more than the whole rest of the map. A
+ * texture a wall and a tree both use is resolved by the world first and keeps
+ * its full size; only one that nothing but props reference is capped.
+ */
+const PROP_TEXTURE_CAP = 512;
+
 /** Source yaw (degrees, +X at 0, counter-clockwise) -> this game's view yaw. */
 export function viewYawFromSource(deg) {
   const t = (deg || 0) * Math.PI / 180;
@@ -181,7 +193,7 @@ export function findZones(ents, models) {
  * is the whole contract: it has to survive being written to a file and read
  * back on another machine a year later.
  */
-export function extractCourse(bsp, resolve) {
+export function extractCourse(bsp, resolve, readProps) {
   const ents = bsp.entities();
   const models = bsp.models();
   const bounds = bsp.worldBounds();
@@ -196,9 +208,9 @@ export function extractCourse(bsp, resolve) {
   const byPath = new Map();
   const materials = new Map();                    // material name -> image index or -1
 
-  const sizeOf = name => {
+  const sizeOf = (name, cap) => {
     if (!materials.has(name)) {
-      const tex = resolve ? resolve(name) : null;
+      const tex = resolve ? resolve(name, cap) : null;
       let at = -1;
       if (tex) {
         at = byPath.get(tex.path);
@@ -237,6 +249,39 @@ export function extractCourse(bsp, resolve) {
 
   /* ---------------- collision ---------------- */
   const brushes = bsp.brushes().map(b => b.planes);
+
+  /* ---------------- static props ----------------
+     A map can put its ride surface in models rather than in brushes, and
+     surf_boreas does: nineteen of its ramps are prop_static, ten of them solid.
+     Reading models means reading four more binary formats, which is a lot to
+     ship to a browser for something that can be done once when the map is
+     packed — so, like the compressed pakfile, it arrives as a hook the tools
+     supply and the browser does without.
+
+     What comes back is meshes to draw, placements to draw them at, and convex
+     hulls for the solid ones. The hulls join the brush list rather than living
+     anywhere separate: a prop's collision is a convex volume like any other,
+     and the physics never has to learn that props exist. */
+  let props = null, propHulls = 0, propStats = null;
+  if (readProps) {
+    const p = readProps(bsp);
+    if (p) {
+      /* A prop's materials go through the same table as the world's, so a
+         texture a wall and a tree both use is uploaded once. The reader names
+         them; resolving a name to an image is this file's job, not its. */
+      props = {
+        models: p.models.map(m => ({
+          meshes: m.meshes.map(mesh => {
+            sizeOf(mesh.material, PROP_TEXTURE_CAP);
+            return { image: materials.get(mesh.material) ?? -1, positions: mesh.positions, uvs: mesh.uvs };
+          }),
+        })),
+        instances: p.instances,
+      };
+      for (const planes of p.hulls || []) { brushes.push(planes); propHulls++; }
+      propStats = p.stats || null;
+    }
+  }
 
   /* ---------------- where you start ----------------
      A map carries dozens of spawns, most for the other team or other stages.
@@ -325,7 +370,7 @@ export function extractCourse(bsp, resolve) {
   const { env } = bsp.lights();
 
   return {
-    bounds, spawns, brushes, groups, images, terrain, triggers, prespeed, finishPad,
+    bounds, spawns, brushes, groups, images, terrain, triggers, prespeed, finishPad, props,
     env: env ? { dir: env.dir, sun: env.sun, ambient: env.ambient } : null,
     stats: {
       faces: surface.faces, drawn: surface.drawn, skipped: surface.skipped,
@@ -338,6 +383,11 @@ export function extractCourse(bsp, resolve) {
          worth seeing in the output rather than in the game. */
       namedMaterials: materials.size,
       resolvedMaterials: [...materials.values()].filter(i => i >= 0).length,
+      propModels: props ? props.models.length : 0,
+      propInstances: props ? props.instances.length : 0,
+      propSolid: propStats ? propStats.solidProps : 0,
+      propMissing: propStats ? propStats.missing : 0,
+      propHulls,
       displacementTris: terrain.length / 9,
       teleports: tele, pits, dormant, triggerVolumes: vols,
       startZone: zones.startName || (startBox ? 'nearest spawn' : 'none'),

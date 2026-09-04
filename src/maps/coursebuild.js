@@ -190,6 +190,70 @@ function addGroup(g, lib) {
   return !!mat.texture;
 }
 
+/* ---------------- props ---------------- */
+
+/**
+ * The map's static props, one instanced draw per model mesh.
+ *
+ * There are 1587 of them on surf_boreas from 27 models, so they are drawn
+ * instanced rather than baked into the world: the mesh is uploaded once and
+ * each placement is a matrix. Baking would put the same pine tree into the
+ * scene two hundred and twenty-three times over.
+ *
+ * They carry no lightmap — Source lights a static prop from its own per-vertex
+ * file, which this does not read — so they take a flat tint instead. Flat is
+ * the honest option: inventing a lighting model for them would make them
+ * disagree with the map around them in a way that is harder to look at than
+ * a prop that is simply evenly lit.
+ */
+const PROP_TINT = 0.62;
+
+function addProps(props, lib) {
+  if (!props || !props.instances || !props.instances.length) return 0;
+  const byModel = new Map();
+  for (const inst of props.instances) {
+    let list = byModel.get(inst.model);
+    if (!list) byModel.set(inst.model, list = []);
+    list.push(inst);
+  }
+
+  const m4 = new THREE.Matrix4();
+  let drawn = 0;
+  for (const [mi, list] of byModel) {
+    const model = props.models[mi];
+    if (!model) continue;
+    for (const mesh of model.meshes) {
+      if (!mesh.positions.length) continue;
+      const mat = lib.load(mesh.image);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+      if (mat.texture) geo.setAttribute('uv', new THREE.BufferAttribute(mesh.uvs, 2));
+
+      const tint = new THREE.Color(PROP_TINT, PROP_TINT, PROP_TINT * 1.06);
+      if (!mat.texture && mat.color) tint.setRGB(mat.color.r * 0.9, mat.color.g * 0.9, mat.color.b * 0.9);
+
+      const im = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({
+        map: mat.texture || null, color: tint, side: THREE.DoubleSide, fog: true,
+        transparent: !!mat.translucent, alphaTest: mat.translucent ? 0.5 : 0,
+      }), list.length);
+
+      for (let i = 0; i < list.length; i++) {
+        const m = list[i].m;                      // rotation 3x3, then translation
+        m4.set(m[0], m[1], m[2], m[9],
+               m[3], m[4], m[5], m[10],
+               m[6], m[7], m[8], m[11],
+               0, 0, 0, 1);
+        im.setMatrixAt(i, m4);
+      }
+      im.instanceMatrix.needsUpdate = true;
+      im.frustumCulled = false;
+      mapGroup.add(im);
+      drawn += list.length;
+    }
+  }
+  return drawn;
+}
+
 /* ============================== the build ============================== */
 
 /**
@@ -237,6 +301,7 @@ export function buildCourse(course, meta, edits) {
   const lib = imageLibrary(course.images);
   let textured = 0;
   for (const g of course.groups) if (addGroup(g, lib)) textured++;
+  const propsDrawn = addProps(course.props, lib);
 
   /* ---------------- the run ---------------- */
   MAP.stages.push({ i: 0, name: 'START', hint: '', color: NEON.lime, floorY: world.minY - 4000 });
@@ -265,7 +330,7 @@ export function buildCourse(course, meta, edits) {
 
   endMap();
   MAP.bounds = world;
-  MAP.stats = { ...course.stats, brushes: solid, dropped, cells, textured, spawn: MAP.spawnNote };
+  MAP.stats = { ...course.stats, brushes: solid, dropped, cells, textured, propsDrawn, spawn: MAP.spawnNote };
   /* What the editor works from: the map as extracted, and the patch in force. */
   MAP.editable = { id: meta.id, original, edits: edits || null };
 

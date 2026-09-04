@@ -101,6 +101,45 @@ export async function encodeSmap(course) {
     for (const q of b) { planes[p++] = q.x; planes[p++] = q.y; planes[p++] = q.z; planes[p++] = q.d; }
   }
 
+  /* Props, kept as instances. A map like surf_boreas places 1587 of them from
+     27 models — trees, rocks, icicles, and the ramps you actually ride. Baking
+     each one out would be the same mesh written to the file a hundred and
+     ninety times over; the model goes in once and each placement is twelve
+     floats. The collision they contribute is not here: a prop's convex hulls
+     become ordinary brushes at extraction, so the physics never learns that
+     props exist. */
+  const propPos = [], propUv = [], propIndex = [];
+  const propModels = (course.props ? course.props.models : []).map(m => ({
+    meshes: m.meshes.map(mesh => {
+      /* Deduplicated the same way the world's meshes are, and for the same
+         reason: surf_summer's props come to 685,400 triangles between them,
+         and as a soup that is two million vertices of mostly repeats. */
+      const n = mesh.positions.length / 3;
+      const seen = new Map();
+      const vertOff = propPos.length / 3, idxOff = propIndex.length;
+      for (let i = 0; i < n; i++) {
+        const key = `${mesh.positions[i * 3]},${mesh.positions[i * 3 + 1]},${mesh.positions[i * 3 + 2]},` +
+          `${mesh.uvs[i * 2]},${mesh.uvs[i * 2 + 1]}`;
+        let at = seen.get(key);
+        if (at === undefined) {
+          at = seen.size;
+          seen.set(key, at);
+          propPos.push(mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]);
+          propUv.push(mesh.uvs[i * 2], mesh.uvs[i * 2 + 1]);
+        }
+        propIndex.push(at);
+      }
+      return { image: mesh.image, vertOff, idxOff, idxCount: n };
+    }),
+  }));
+  const instances = course.props ? course.props.instances : [];
+  const propXform = new Float32Array(instances.length * 12);
+  const propModelIndex = new Uint16Array(instances.length);
+  for (let i = 0; i < instances.length; i++) {
+    propModelIndex[i] = instances[i].model;
+    propXform.set(instances[i].m, i * 12);
+  }
+
   const parts = [];
   let offset = 0;
   const section = async (bytes, compress) => {
@@ -142,6 +181,11 @@ export async function encodeSmap(course) {
     terrain: await section(bytesOf(course.terrain || new Float32Array(0)), true),
     triggerPlanes: await section(bytesOf(triggerPlanes), true),
     triggerPlaneCounts: await section(bytesOf(triggerCounts), true),
+    propPos: await section(bytesOf(new Float32Array(propPos)), true),
+    propUv: await section(bytesOf(new Float32Array(propUv)), true),
+    propIndex: await section(bytesOf(new Uint32Array(propIndex)), true),
+    propXform: await section(bytesOf(propXform), true),
+    propModelIndex: await section(bytesOf(propModelIndex), true),
   };
 
   /* The images last, uncompressed: they are DXT blocks, which gzip cannot
@@ -168,6 +212,7 @@ export async function encodeSmap(course) {
     env: course.env,
     stats: course.stats,
     groups, images, sections,
+    propModels,
   };
 
   const headerBytes = new TextEncoder().encode(JSON.stringify(header));
@@ -282,6 +327,35 @@ export async function decodeSmap(buffer) {
     brushes.push(ps);
   }
 
+  /* Props back out: one triangle soup per model mesh, and a transform each. */
+  const propPos = await floats(sec.propPos);
+  const propUv = await floats(sec.propUv);
+  const piBytes = await read(sec.propIndex);
+  const propIndex = new Uint32Array(piBytes.buffer, piBytes.byteOffset, piBytes.byteLength / 4);
+  const propXform = await floats(sec.propXform);
+  const pmiBytes = await read(sec.propModelIndex);
+  const propModelIndex = new Uint16Array(pmiBytes.buffer, pmiBytes.byteOffset, pmiBytes.byteLength / 2);
+  const props = {
+    models: (header.propModels || []).map(m => ({
+      meshes: m.meshes.map(mesh => {
+        const n = mesh.idxCount;
+        const positions = new Float32Array(n * 3), uvs = new Float32Array(n * 2);
+        for (let i = 0; i < n; i++) {
+          const v = mesh.vertOff + propIndex[mesh.idxOff + i];
+          positions[i * 3] = propPos[v * 3];
+          positions[i * 3 + 1] = propPos[v * 3 + 1];
+          positions[i * 3 + 2] = propPos[v * 3 + 2];
+          uvs[i * 2] = propUv[v * 2];
+          uvs[i * 2 + 1] = propUv[v * 2 + 1];
+        }
+        return { image: mesh.image, positions, uvs };
+      }),
+    })),
+    instances: Array.from(propModelIndex, (model, i) => ({
+      model, m: Array.from(propXform.subarray(i * 12, i * 12 + 12)),
+    })),
+  };
+
   const images = header.images.map(img => ({
     path: img.path, width: img.width, height: img.height,
     format: img.format, translucent: img.translucent,
@@ -291,6 +365,6 @@ export async function decodeSmap(buffer) {
   return {
     bounds: header.bounds, spawns: header.spawns, triggers,
     prespeed: header.prespeed, finishPad: header.finishPad, env: header.env,
-    stats: header.stats, brushes, groups, images, terrain,
+    stats: header.stats, brushes, groups, images, terrain, props,
   };
 }

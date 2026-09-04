@@ -42,6 +42,23 @@ class BufferAttribute {
   setZ(i, v) { this.array[i * this.itemSize + 2] = v; }
 }
 class Material { constructor(o = {}) { Object.assign(this, o); } dispose() {} }
+/* Enough Matrix4 and InstancedMesh for the prop builder to run headlessly.
+   Nothing here transforms anything — verify-maps cares where the collision
+   went, and props contribute their collision as ordinary convex brushes. */
+class Matrix4 {
+  constructor() { this.elements = new Array(16).fill(0); this.elements[0] = this.elements[5] = this.elements[10] = this.elements[15] = 1; }
+  set(...v) { this.elements = v.slice(0, 16); return this; }
+  identity() { return this; }
+}
+class InstancedMesh extends Obj3D {
+  constructor(geometry, material, count) {
+    super();
+    this.geometry = geometry; this.material = material; this.count = count;
+    this.instanceMatrix = { needsUpdate: false };
+  }
+  setMatrixAt() {}
+  dispose() {}
+}
 class Light extends Obj3D {
   constructor(...a) {
     super();
@@ -82,6 +99,7 @@ const three = {
   RGBA_S3TC_DXT3_Format: 33778, RGBA_S3TC_DXT5_Format: 33779,
   RepeatWrapping: 1000,
   HemisphereLight: Light, DirectionalLight: Light, PointLight: Light,
+  Matrix4, InstancedMesh,
   Vector3: V3, Color, Fog: class { constructor(c, n, f) { this.color = new Color(c); this.near = n; this.far = f; } },
   DoubleSide: 2, BackSide: 1, FrontSide: 0, PCFSoftShadowMap: 2,
   MathUtils: { clamp: (v, a, b) => v < a ? a : v > b ? b : v },
@@ -95,5 +113,5 @@ export const {
   RGBAFormat, SRGBColorSpace, LinearFilter, NearestFilter,
   DoubleSide, BackSide, FrontSide, PCFSoftShadowMap, MathUtils,
 } = three;
-export { BufferAttribute };
+export { BufferAttribute, Matrix4, InstancedMesh };
 export { V3 as Vector3, Color };
