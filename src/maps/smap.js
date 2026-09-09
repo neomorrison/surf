@@ -53,7 +53,7 @@ async function gunzip(bytes) {
  * that removes about three fifths of the vertices.
  */
 export async function encodeSmap(course) {
-  const pos = [], uv = [], light = [], index = [];
+  const pos = [], uv = [], light = [], blend = [], index = [];
   const groups = [];
 
   for (const g of course.groups) {
@@ -61,11 +61,13 @@ export async function encodeSmap(course) {
     if (!n) continue;
     const seen = new Map();
     const vertOff = pos.length / 3, idxOff = index.length;
+    const hasBlend = !!g.blend;
     for (let i = 0; i < n; i++) {
       const px = g.pos[i * 3], py = g.pos[i * 3 + 1], pz = g.pos[i * 3 + 2];
       const u = g.uv[i * 2], v = g.uv[i * 2 + 1];
       const lr = g.light[i * 3], lg = g.light[i * 3 + 1], lb = g.light[i * 3 + 2];
-      const key = `${px},${py},${pz},${u},${v},${lr},${lg},${lb}`;
+      const bl = hasBlend ? g.blend[i] : 0;
+      const key = `${px},${py},${pz},${u},${v},${lr},${lg},${lb},${bl}`;
       let at = seen.get(key);
       if (at === undefined) {
         at = seen.size;
@@ -73,11 +75,12 @@ export async function encodeSmap(course) {
         pos.push(px, py, pz);
         uv.push(u, v);
         light.push(lr, lg, lb);
+        blend.push(bl);
       }
       index.push(at);
     }
     groups.push({
-      material: g.material, image: g.image,
+      material: g.material, image: g.image, image2: g.image2 ?? -1, blend: hasBlend,
       vertOff, vertCount: seen.size, idxOff, idxCount: n,
     });
   }
@@ -175,6 +178,7 @@ export async function encodeSmap(course) {
     pos: await section(bytesOf(new Float32Array(pos)), true),
     uv: await section(bytesOf(new Float32Array(uv)), true),
     light: await section(bytesOf(new Float32Array(light)), true),
+    blend: await section(bytesOf(new Float32Array(blend)), true),
     index: await section(bytesOf(new Uint32Array(index)), true),
     planes: await section(bytesOf(planes), true),
     brushCounts: await section(bytesOf(counts), true),
@@ -278,6 +282,7 @@ export async function decodeSmap(buffer) {
   const pos = await floats(sec.pos);
   const uv = await floats(sec.uv);
   const light = await floats(sec.light);
+  const blend = await floats(sec.blend);
   const idxBytes = await read(sec.index);
   const index = new Uint32Array(idxBytes.buffer, idxBytes.byteOffset, idxBytes.byteLength / 4);
   const planeData = await doubles(sec.planes);
@@ -292,13 +297,15 @@ export async function decodeSmap(buffer) {
        which three.js draws as an invisible mesh and reports nowhere. */
     if (n % 3) throw new Error(`packed map: mesh "${g.material}" has ${n} vertices, not a whole number of triangles`);
     const gp = new Float32Array(n * 3), gu = new Float32Array(n * 2), gl = new Float32Array(n * 3);
+    const gb = g.blend ? new Float32Array(n) : null;
     for (let i = 0; i < n; i++) {
       const v = g.vertOff + index[g.idxOff + i];
       gp[i * 3] = pos[v * 3]; gp[i * 3 + 1] = pos[v * 3 + 1]; gp[i * 3 + 2] = pos[v * 3 + 2];
       gu[i * 2] = uv[v * 2]; gu[i * 2 + 1] = uv[v * 2 + 1];
       gl[i * 3] = light[v * 3]; gl[i * 3 + 1] = light[v * 3 + 1]; gl[i * 3 + 2] = light[v * 3 + 2];
+      if (gb) gb[i] = blend[v];
     }
-    return { material: g.material, image: g.image, pos: gp, uv: gu, light: gl };
+    return { material: g.material, image: g.image, image2: g.image2 ?? -1, pos: gp, uv: gu, light: gl, blend: gb };
   });
 
   /* Reattach each volume's shape. A count of zero means the volume really is

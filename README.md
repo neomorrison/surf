@@ -391,12 +391,12 @@ compressed already:
 surf_aircontrol_ksf    22.1 MB  ->   2.7 MB
 surf_utopia_njv        53.7 MB  ->   4.1 MB
 surf_cyberwave         91.2 MB  ->   8.6 MB
-surf_mesa_mine         98.7 MB  ->  10.6 MB
-surf_mesa_fixed        59.3 MB  ->  13.0 MB
-surf_boreas            58.2 MB  ->  14.1 MB
+surf_mesa_mine         98.7 MB  ->  12.6 MB
+surf_boreas            58.2 MB  ->  14.4 MB
+surf_mesa_fixed        59.3 MB  ->  14.9 MB
 surf_summer           289.1 MB  ->  51.0 MB
                       -------      -------
-                       672.4 MB    104.1 MB     15.5%
+                       672.4 MB    108.3 MB     16.1%
 ```
 
 Same geometry, same textures at the same resolution, same baked lighting. Nothing the game would
@@ -535,6 +535,25 @@ tree both use is resolved by the world first and keeps its full size.
 That map is still the outlier at 51 MB, against 20 MB before props. Most of
 that is 286 prop textures rather than geometry, which deduplicates to under a
 megabyte. Nothing else moved more than 3 MB.
+
+### A displaced face is drawn once
+
+A displacement replaces the flat quad it was carved from. Drawing both leaves a
+sheet of geometry hanging across the terrain — solid to look at, absent from
+collision, so you surf clean through a mountain that is still blocking your
+view. `surf_boreas` had 1125 of them, one per displacement.
+
+### Terrain has two layers
+
+A `WorldVertexTransition` material names two textures and mixes them by an alpha
+the mapper painted onto each displacement vertex: rock with snow lying on it,
+dirt under grass. On `surf_boreas` that is 94% of the terrain — 124,896 of its
+132,480 triangles — so reading only the first layer was not a small loss of
+detail. It turned a snow map into bare rock.
+
+Both layers are carried now, and the mix is grafted onto the standard material
+rather than written as a shader of its own, so fog, the baked lightmap and the
+sRGB conversion go on working the way they do everywhere else.
 
 ### A volume is not its bounding box
 

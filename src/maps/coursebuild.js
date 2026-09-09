@@ -181,10 +181,38 @@ function addGroup(g, lib) {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   if (mat.texture) geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
 
-  const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+  const material = new THREE.MeshBasicMaterial({
     map: mat.texture || null, vertexColors: true, side: THREE.DoubleSide, fog: true,
     transparent: !!mat.translucent, alphaTest: mat.translucent ? 0.5 : 0,
-  }));
+  });
+
+  /* Two-layer terrain. A WorldVertexTransition samples both its textures with
+     the same coordinates and mixes them by an alpha the mapper painted onto
+     each displacement vertex — rock with snow lying on it, dirt with grass
+     over it. Drawing only the first layer is what made a snow map look like
+     bare rock. It is grafted onto MeshBasicMaterial rather than written as a
+     ShaderMaterial so that fog, vertex colour and the sRGB conversion keep
+     working exactly as they do for everything else. */
+  const second = g.blend && lib.load(g.image2).texture;
+  if (second) {
+    geo.setAttribute('blend', new THREE.BufferAttribute(g.blend, 1));
+    material.onBeforeCompile = shader => {
+      shader.uniforms.map2 = { value: second };
+      shader.vertexShader = 'attribute float blend;\nvarying float vBlend;\n' +
+        shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vBlend = blend;');
+      shader.fragmentShader = 'uniform sampler2D map2;\nvarying float vBlend;\n' +
+        shader.fragmentShader.replace('#include <map_fragment>', `
+          #ifdef USE_MAP
+            vec4 layer1 = texture2D( map, vMapUv );
+            vec4 layer2 = texture2D( map2, vMapUv );
+            diffuseColor *= mix( layer1, layer2, clamp( vBlend, 0.0, 1.0 ) );
+          #endif
+        `);
+    };
+    material.customProgramCacheKey = () => 'blend2';
+  }
+
+  const m = new THREE.Mesh(geo, material);
   m.frustumCulled = false;
   mapGroup.add(m);
   return !!mat.texture;

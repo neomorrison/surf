@@ -80,8 +80,12 @@ for (const m of wanted) {
     const raw2 = pak.get(res.path);
     const vtf = raw2 && parseVtf(raw2, cap);
     if (!vtf) return null;
+    const second = res.path2 && pak.get(res.path2);
+    const vtf2 = second && parseVtf(second, cap);
     return { path: res.path, width: vtf.width, height: vtf.height,
-             format: vtf.format, data: vtf.data, translucent: res.translucent };
+             format: vtf.format, data: vtf.data, translucent: res.translucent,
+             second: vtf2 ? { path: res.path2, width: vtf2.width, height: vtf2.height,
+                              format: vtf2.format, data: vtf2.data, translucent: false } : null };
   };
   buildCourse(extractCourse(bsp, resolve, b => readProps(b, pak)), meta);
   const fromBsp = snapshot();

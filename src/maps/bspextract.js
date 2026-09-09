@@ -207,23 +207,29 @@ export function extractCourse(bsp, resolve, readProps) {
   const images = [];
   const byPath = new Map();
   const materials = new Map();                    // material name -> image index or -1
+  const materials2 = new Map();                   // and its blend layer, where it has one
+
+  const addImage = tex => {
+    let at = byPath.get(tex.path);
+    if (at === undefined) {
+      at = images.length;
+      byPath.set(tex.path, at);
+      images.push({
+        path: tex.path, width: tex.width, height: tex.height,
+        format: tex.format, translucent: !!tex.translucent, data: tex.data,
+      });
+    }
+    return at;
+  };
 
   const sizeOf = (name, cap) => {
     if (!materials.has(name)) {
       const tex = resolve ? resolve(name, cap) : null;
-      let at = -1;
-      if (tex) {
-        at = byPath.get(tex.path);
-        if (at === undefined) {
-          at = images.length;
-          byPath.set(tex.path, at);
-          images.push({
-            path: tex.path, width: tex.width, height: tex.height,
-            format: tex.format, translucent: !!tex.translucent, data: tex.data,
-          });
-        }
-      }
-      materials.set(name, at);
+      materials.set(name, tex ? addImage(tex) : -1);
+      /* A two-layer material carries its second texture the same way. The UVs
+         are shared: Source samples both with the same coordinates and lets the
+         displacement's painted alpha decide the mix. */
+      materials2.set(name, tex && tex.second ? addImage(tex.second) : -1);
     }
     const at = materials.get(name);
     return at >= 0 ? { w: images[at].width, h: images[at].height } : { w: 512, h: 512 };
@@ -244,7 +250,9 @@ export function extractCourse(bsp, resolve, readProps) {
   const groups = [...surface.groups, ...disp.groups].map(g => ({
     material: g.material,
     image: materials.has(g.material) ? materials.get(g.material) : -1,
+    image2: materials2.has(g.material) ? materials2.get(g.material) : -1,
     pos: g.pos, uv: g.uv, light: g.light,
+    blend: g.blend && g.blend.length ? g.blend : null,
   }));
 
   /* ---------------- collision ---------------- */
@@ -383,6 +391,7 @@ export function extractCourse(bsp, resolve, readProps) {
          worth seeing in the output rather than in the game. */
       namedMaterials: materials.size,
       resolvedMaterials: [...materials.values()].filter(i => i >= 0).length,
+      blendMaterials: [...materials2.values()].filter(i => i >= 0).length,
       propModels: props ? props.models.length : 0,
       propInstances: props ? props.instances.length : 0,
       propSolid: propStats ? propStats.solidProps : 0,

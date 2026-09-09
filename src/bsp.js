@@ -407,7 +407,12 @@ class Bsp {
       const lightofs = this.dv.getInt32(o + 20, true);
       const minS = this.dv.getInt32(o + 28, true), minT = this.dv.getInt32(o + 32, true);
       const sizeS = this.dv.getInt32(o + 36, true), sizeT = this.dv.getInt32(o + 40, true);
-      if (dispinfo >= 0) disp++;
+      /* A displaced face is drawn by displacements(), from the subdivided grid
+         that replaced it. Drawing the flat quad as well leaves a sheet of
+         geometry hanging across the terrain it was carved into — solid to look
+         at, absent from collision, so you surf straight through a mountain
+         that is still blocking your view. surf_boreas has 1125 of them. */
+      if (dispinfo >= 0) { disp++; continue; }
       const t = tex[texinfo];
       if (!t || (t.flags & INVISIBLE)) { skipped++; continue; }
       if (numedges < 3) continue;
@@ -547,6 +552,11 @@ class Bsp {
 
       const side = (1 << power) + 1;
       const gx = new Float32Array(side * side), gy = new Float32Array(side * side), gz = new Float32Array(side * side);
+      /* The blend weight the mapper painted, one per grid point. A
+         WorldVertexTransition material uses it to choose between its two
+         textures, which on a snow map is the difference between rock and the
+         snow lying on it. */
+      const ga = new Float32Array(side * side);
       for (let i = 0; i < side; i++) {
         const fi = i / (side - 1);
         const lx = q[0].x + (q[1].x - q[0].x) * fi, ly = q[0].y + (q[1].y - q[0].y) * fi, lz = q[0].z + (q[1].z - q[0].z) * fi;
@@ -562,6 +572,7 @@ class Bsp {
           gx[idx] = lx + (rx - lx) * fj + dvx * dist;
           gy[idx] = ly + (ry - ly) * fj + dvy * dist;
           gz[idx] = lz + (rz - lz) * fj + dvz * dist;
+          ga[idx] = Math.max(0, Math.min(1, this.dv.getFloat32(vo + 16, true) / 255));
         }
       }
 
@@ -577,10 +588,11 @@ class Bsp {
       const hasLight = lightofs >= 0 && lw > 0 && lh > 0;
 
       let g = groups.get(t.name);
-      if (!g) groups.set(t.name, g = { material: t.name, pos: [], light: [], uv: [] });
+      if (!g) groups.set(t.name, g = { material: t.name, pos: [], light: [], uv: [], blend: [] });
 
       const off = offset[owner[mapFace]] || null;
       const emit = idx => {
+        g.blend.push(ga[idx]);
         const X = gx[idx], Y = gy[idx], Z = gz[idx];
         if (off) g.pos.push(X + off.x, Z + off.y, -Y + off.z);
         else g.pos.push(X, Z, -Y);                     // to Y-up

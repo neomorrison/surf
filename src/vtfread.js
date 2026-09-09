@@ -37,7 +37,7 @@ const ENVMAP = 0x4000;
  * fully textured map rendering with no textures and no error.
  */
 export function parseVmt(text) {
-  const out = { include: null, basetexture: null, translucent: false };
+  const out = { include: null, basetexture: null, basetexture2: null, translucent: false };
   for (const line of text.split(/\r?\n/)) {
     const m = line.match(/^\s*"?([$%\w]+)"?\s+"?([^"\r\n]*?)"?\s*$/);
     if (!m) continue;
@@ -45,6 +45,7 @@ export function parseVmt(text) {
     const val = m[2].trim().replace(/\\/g, '/');
     if (key === 'include') out.include = val;
     else if (key === '$basetexture') out.basetexture = val;
+    else if (key === '$basetexture2') out.basetexture2 = val;
     else if ((key === '$translucent' || key === '$alphatest') && val === '1') out.translucent = true;
   }
   return out;
@@ -64,7 +65,15 @@ export function resolveTexture(pak, material, depth = 0) {
     return resolveTexture(pak, vmt.include.replace(/^materials\//i, '').replace(/\.vmt$/i, ''), depth + 1);
   }
   if (!vmt.basetexture) return null;
-  return { path: ('materials/' + vmt.basetexture + '.vtf').toLowerCase(), translucent: vmt.translucent };
+  /* A WorldVertexTransition names two textures and lets the displacement's own
+     per-vertex alpha choose between them — rock under snow, dirt under grass.
+     On surf_boreas that is 94% of the terrain, so reading only the first one
+     is not a small loss of detail: it is the wrong landscape. */
+  return {
+    path: ('materials/' + vmt.basetexture + '.vtf').toLowerCase(),
+    path2: vmt.basetexture2 ? ('materials/' + vmt.basetexture2 + '.vtf').toLowerCase() : null,
+    translucent: vmt.translucent,
+  };
 }
 
 /**

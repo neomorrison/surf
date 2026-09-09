@@ -33,9 +33,15 @@ function pakResolver(bsp) {
     const raw = pak.get(res.path);
     const vtf = raw && parseVtf(raw, cap);
     if (!vtf) return null;
+    const second = res.path2 && pak.get(res.path2);
+    const vtf2 = second && parseVtf(second, cap);
     return {
       path: res.path, width: vtf.width, height: vtf.height,
       format: vtf.format, data: vtf.data, translucent: res.translucent,
+      second: vtf2 ? {
+        path: res.path2, width: vtf2.width, height: vtf2.height,
+        format: vtf2.format, data: vtf2.data, translucent: false,
+      } : null,
     };
   };
 }
